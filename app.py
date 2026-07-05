@@ -98,6 +98,10 @@ if analyze_button and user_input:
                 st.stop()
             
             hist_64 = hist.tail(64).copy()
+            
+            # 【核心修改】：將成交量由「股數」轉換為「張數」(除以 1000)
+            hist_64['Volume'] = hist_64['Volume'] / 1000
+            
             current_price = hist_64['Close'].dropna().iloc[-1]
             current_price_round = round(current_price, 2)
             
@@ -171,21 +175,20 @@ if analyze_button and user_input:
             # --- 繪製互動式手機圖表 (Plotly) ---
             st.subheader("📊 64日實體分價量分佈圖")
             df_plot = pd.DataFrame({
-                # 【修正1】使用乾淨的 item['label'] (不含 **)，避免干擾排序
                 '價格區間': [item['label'] for item in all_intervals_disp],
-                '累積成交量': [item['vol'] for item in all_intervals_disp],
+                '累積成交量 (張)': [int(item['vol']) for item in all_intervals_disp], # 改為張數
                 '標記': ['現價所在' if item['is_current'] else '一般區間' for item in all_intervals_disp]
             })
             
             # 使用 Plotly 畫水平長條圖
-            fig = px.bar(df_plot, x='累積成交量', y='價格區間', color='標記', 
+            fig = px.bar(df_plot, x='累積成交量 (張)', y='價格區間', color='標記', 
                          color_discrete_map={'現價所在': '#FF4B4B', '一般區間': '#60B4FF'},
                          orientation='h')
-            
-            # 【修正2】強制 Plotly 嚴格按照我們 DataFrame 的價格由高到低排列，不要雞婆去照字母排！
+                         
+            # 強制鎖定價格排序，避免被 Plotly 自動按字首排序
             fig.update_yaxes(categoryorder='array', categoryarray=df_plot['價格區間'])
             
-            # 反轉 Y 軸讓高價在上，並設定邊距
+            # 反轉 Y 軸讓高價在上
             fig.update_layout(yaxis=dict(autorange="reversed"), margin=dict(l=0, r=0, t=30, b=0), height=500)
             st.plotly_chart(fig, use_container_width=True)
 
@@ -195,11 +198,12 @@ if analyze_button and user_input:
             with col1:
                 st.write("**⬆️ 向上方壓力區**")
                 for item in top_5_above_disp:
-                    st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 股")
+                    # 單位替換為「張」
+                    st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
             with col2:
                 st.write("**⬇️ 向下方支撐區**")
                 for item in top_5_below_disp:
-                    st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 股")
+                    st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
 
             # ==========================================
             # 6. 法人買賣強度
@@ -222,7 +226,9 @@ if analyze_button and user_input:
                         if res_vol.get('stat') == 'OK':
                             df_vol = pd.DataFrame(res_vol['data'], columns=res_vol['fields'])
                             vol_val = dict(zip(df_vol['日期'], df_vol['成交股數'])).get(tw_date_str, "0")
-                            daily_vol = int(vol_val.replace(',', '')) if isinstance(vol_val, str) else int(vol_val)
+                            daily_vol_shares = int(vol_val.replace(',', '')) if isinstance(vol_val, str) else int(vol_val)
+                            # 轉換為張數
+                            daily_vol = round(daily_vol_shares / 1000)
                     except: pass
                     
                     try:
@@ -232,10 +238,15 @@ if analyze_button and user_input:
                             target_row = df_t86[df_t86['證券代號'] == raw_ticker]
                             if not target_row.empty:
                                 buy_col = '三大法人買賣超股數' if '三大法人買賣超股數' in df_t86.columns else df_t86.columns[-1]
-                                net_buy = int(target_row[buy_col].values[0].replace(',', ''))
+                                net_buy_shares = int(target_row[buy_col].values[0].replace(',', ''))
+                                # 轉換為張數
+                                net_buy = round(net_buy_shares / 1000)
                     except: pass
                     
-                    if daily_vol == 0: daily_vol = int(hist_64.loc[d, 'Volume'])
+                    if daily_vol == 0: 
+                        # 取用前段已被除以1000的 Volume 資料
+                        daily_vol = int(hist_64.loc[d, 'Volume']) 
+                        
                     daily_records.append({'date_disp': d.strftime('%Y-%m-%d'), 'net_buy': net_buy, 'volume': daily_vol})
 
                 chip_results = []
@@ -245,10 +256,10 @@ if analyze_button and user_input:
                     ratio = (t_net_buy / t_vol * 100) if t_vol > 0 else 0
                     chip_results.append({
                         '結算日期': daily_records[i]['date_disp'],
-                        '當日買賣超(股)': f"{daily_records[i]['net_buy']:,}",
-                        '5日累計買賣超(股)': f"{t_net_buy:,}",
-                        '5日累計成交量(股)': f"{t_vol:,}",
-                        '買賣強度(%)': f"{ratio:.2f}%"
+                        '當日買賣超 (張)': f"{daily_records[i]['net_buy']:,}",
+                        '5日累計買賣超 (張)': f"{t_net_buy:,}",
+                        '5日累計成交量 (張)': f"{t_vol:,}",
+                        '買賣強度 (%)': f"{ratio:.2f}%"
                     })
                 
                 df_chip = pd.DataFrame(list(reversed(chip_results)))
@@ -260,15 +271,15 @@ if analyze_button and user_input:
             st.divider()
             st.subheader("💾 匯出完整 Excel 報表")
             
-            # 整理要存檔的 DataFrame
+            # 整理要存檔的 DataFrame，更新所有「股」為「張」
             df_sr_excel = pd.DataFrame([{
-                '項次': i+1, '價格級距區間 (TWD)': item['disp_label'], '累積成交量 (股)': int(item['vol'])
+                '項次': i+1, '價格級距區間 (TWD)': item['disp_label'], '累積成交量 (張)': int(item['vol'])
             } for i, item in enumerate(all_intervals_disp)])
             
             df_top5_excel = pd.DataFrame(
-                [{'位置': '⬆️ 向上壓力區', '價格級距區間': b['disp_label'], '累積成交量': int(b['vol'])} for b in top_5_above_disp] +
-                [{'位置': '🎯 最新股價 (中軸)', '價格級距區間': f"{current_price_round:.2f}", '累積成交量': 0}] +
-                [{'位置': '⬇️ 向下支撐區', '價格級距區間': b['disp_label'], '累積成交量': int(b['vol'])} for b in top_5_below_disp]
+                [{'位置': '⬆️ 向上壓力區', '價格級距區間': b['disp_label'], '累積成交量 (張)': int(b['vol'])} for b in top_5_above_disp] +
+                [{'位置': '🎯 最新股價 (中軸)', '價格級距區間': f"{current_price_round:.2f}", '累積成交量 (張)': 0}] +
+                [{'位置': '⬇️ 向下支撐區', '價格級距區間': b['disp_label'], '累積成交量 (張)': int(b['vol'])} for b in top_5_below_disp]
             )
 
             # 在記憶體中建立 Excel
@@ -289,7 +300,7 @@ if analyze_button and user_input:
                 chart = BarChart()
                 chart.type, chart.style = "bar", 10
                 chart.title = f"{target_name} 64日分價量分佈圖"
-                chart.x_axis.title, chart.y_axis.title = "價格級距區間 (TWD)", "累積成交量 (股)"
+                chart.x_axis.title, chart.y_axis.title = "價格級距區間 (TWD)", "累積成交量 (張)" # 更新軸標題
                 chart.x_axis.scaling.orientation, chart.y_axis.crosses = "maxMin", "max"
                 chart.height, chart.width = max(10, len(df_sr_excel) * 0.5) * 1.5, 16 * 1.5
                 
