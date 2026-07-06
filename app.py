@@ -213,8 +213,12 @@ if analyze_button and user_input:
             # ==========================================
             st.success(f"✅ {target_name} ({yf_ticker}) 分析完成！最新股價: {current_price_round:.2f}")
             
-            # --- 繪製 K 線與均線圖 ---
-            st.subheader("📈 64日技術K線與移動平均線 (5MA/10MA/20MA)")
+            # --- 【全新修改】：均線打勾選擇選單 ---
+            st.subheader("📈 64日技術K線與移動平均線")
+            col_ma1, col_ma2, col_ma3 = st.columns(3)
+            show_ma5 = col_ma1.checkbox("顯示 5MA (咖啡色)", value=True)
+            show_ma10 = col_ma2.checkbox("顯示 10MA (亮藍綠)", value=True)
+            show_ma20 = col_ma3.checkbox("顯示 20MA (深藍色)", value=True)
             
             date_strings = hist_64.index.strftime('%Y-%m-%d')
             fig_k = go.Figure()
@@ -231,14 +235,20 @@ if analyze_button and user_input:
                 decreasing_line_color='#00B050'   
             ))
             
-            # 加上 5MA、10MA、20MA 移動平均線
-            fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA5'], name='5MA', line=dict(color='#FF9900', width=1.5)))
-            fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA10'], name='10MA', line=dict(color='#9900CC', width=1.5)))
-            fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA20'], name='20MA', line=dict(color='#0066FF', width=1.5)))
+            # 【全新修改】：根據打勾狀態與指定顏色渲染均線
+            if show_ma5:
+                fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA5'], name='5MA', line=dict(color='#7A431D', width=1.5))) # 咖啡色
+            if show_ma10:
+                fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA10'], name='10MA', line=dict(color='#00E5FF', width=1.5))) # 亮藍綠色
+            if show_ma20:
+                fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA20'], name='20MA', line=dict(color='#0D47A1', width=1.5))) # 深藍色
             
+            # 【全新修改】：K線圖底色全改為純白色 + 灰網格
             fig_k.update_layout(
-                xaxis_title="交易日期",
-                yaxis_title="價格 (TWD)",
+                plot_bgcolor='white',
+                paper_bgcolor='white',
+                xaxis=dict(showgrid=True, gridcolor='#EFEFEF', title="交易日期"),
+                yaxis=dict(showgrid=True, gridcolor='#EFEFEF', title="價格 (TWD)"),
                 xaxis_rangeslider_visible=False,  
                 margin=dict(l=0, r=0, t=20, b=0),
                 height=420,
@@ -259,7 +269,17 @@ if analyze_button and user_input:
                          color_discrete_map={'現價所在': '#FF4B4B', '一般區間': '#60B4FF'},
                          orientation='h')
             fig.update_yaxes(categoryorder='array', categoryarray=df_plot['價格區間'])
-            fig.update_layout(yaxis=dict(autorange="reversed"), margin=dict(l=0, r=0, t=30, b=0), height=500)
+            
+            # 【全新修改】：分價量圖底色同步全改為純白色 + 灰網格
+            fig.update_layout(
+                plot_bgcolor='white',
+                paper_bgcolor='white',
+                xaxis=dict(showgrid=True, gridcolor='#EFEFEF'),
+                yaxis=dict(showgrid=True, gridcolor='#EFEFEF'),
+                yaxis_title="價格區間",
+                margin=dict(l=0, r=0, t=30, b=0), 
+                height=500
+            )
             st.plotly_chart(fig, use_container_width=True)
 
             st.subheader("🎯 關鍵支撐與壓力 (Top 5)")
