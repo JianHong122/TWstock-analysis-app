@@ -106,7 +106,7 @@ if analyze_button and user_input:
                 st.error("❌ 無法取得歷史資料。可能是股票下市、代號錯誤，或 Yahoo API 暫時阻擋，請 5 分鐘後再試。")
                 st.stop()
             
-            # 在切分 64 天前，先利用半年資料精算 5MA、10MA、20MA，確保歷史連續性
+            # 在切分 64 天前，先利用半年資料精算 5MA、10MA、20MA
             hist['MA5'] = hist['Close'].rolling(window=5).mean()
             hist['MA10'] = hist['Close'].rolling(window=10).mean()
             hist['MA20'] = hist['Close'].rolling(window=20).mean()
@@ -152,7 +152,7 @@ if analyze_button and user_input:
                     'vol': 0
                 })
             
-            # 全新籌碼攤平邏輯：開5%、收30%、高低均分65%
+            # 籌碼攤平邏輯
             all_price_vols = []
             for index, row in hist_64.iterrows():
                 o = round(row['Open'], 2)
@@ -201,19 +201,15 @@ if analyze_button and user_input:
                     
             all_intervals_disp = sorted(bins_data, key=lambda x: x['idx'], reverse=True)
             
-            # Top 5 計算
-            above_bins = [b for b in bins_data if b['mid'] >= current_price_round and b['vol'] > 0]
-            below_bins = [b for b in bins_data if b['mid'] < current_price_round and b['vol'] > 0]
-            
-            top_5_above_disp = sorted(sorted(above_bins, key=lambda x: x['vol'], reverse=True)[:5], key=lambda x: x['start'], reverse=True)
-            top_5_below_disp = sorted(sorted(below_bins, key=lambda x: x['vol'], reverse=True)[:5], key=lambda x: x['start'], reverse=True)
+            top_5_above_disp = sorted(sorted([b for b in bins_data if b['mid'] >= current_price_round and b['vol'] > 0], key=lambda x: x['vol'], reverse=True)[:5], key=lambda x: x['start'], reverse=True)
+            top_5_below_disp = sorted(sorted([b for b in bins_data if b['mid'] < current_price_round and b['vol'] > 0], key=lambda x: x['vol'], reverse=True)[:5], key=lambda x: x['start'], reverse=True)
 
             # ==========================================
             # 5. 網頁 UI：顯示結果與圖表
             # ==========================================
             st.success(f"✅ {target_name} ({yf_ticker}) 分析完成！最新股價: {current_price_round:.2f}")
             
-            # --- 【全新修改】：均線打勾選擇選單 ---
+            # --- 繪製 K 線與均線圖 ---
             st.subheader("📈 64日技術K線與移動平均線")
             col_ma1, col_ma2, col_ma3 = st.columns(3)
             show_ma5 = col_ma1.checkbox("顯示 5MA (咖啡色)", value=True)
@@ -223,7 +219,7 @@ if analyze_button and user_input:
             date_strings = hist_64.index.strftime('%Y-%m-%d')
             fig_k = go.Figure()
             
-            # 加上 K 線 trace (台股傳統：紅漲綠跌)
+            # 【全新修改】：實心純色的 K 線設計
             fig_k.add_trace(go.Candlestick(
                 x=date_strings,
                 open=hist_64['Open'],
@@ -231,24 +227,23 @@ if analyze_button and user_input:
                 low=hist_64['Low'],
                 close=hist_64['Close'],
                 name='K線',
-                increasing_line_color='#FF4B4B',  
-                decreasing_line_color='#00B050'   
+                increasing_line_color='#FF4B4B',  # 上漲外框紅
+                increasing_fillcolor='#FF4B4B',   # 上漲實體紅
+                decreasing_line_color='#00B050',  # 下跌外框綠
+                decreasing_fillcolor='#00B050'    # 下跌實體綠
             ))
             
-            # 【全新修改】：根據打勾狀態與指定顏色渲染均線
             if show_ma5:
-                fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA5'], name='5MA', line=dict(color='#7A431D', width=1.5))) # 咖啡色
+                fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA5'], name='5MA', line=dict(color='#7A431D', width=1.5))) 
             if show_ma10:
-                fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA10'], name='10MA', line=dict(color='#00E5FF', width=1.5))) # 亮藍綠色
+                fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA10'], name='10MA', line=dict(color='#00E5FF', width=1.5))) 
             if show_ma20:
-                fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA20'], name='20MA', line=dict(color='#0D47A1', width=1.5))) # 深藍色
+                fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA20'], name='20MA', line=dict(color='#0D47A1', width=1.5))) 
             
-            # 【全新修改】：K線圖底色全改為純白色 + 灰網格
+            # 【全新修改】：移除白底設定，回歸 Streamlit 預設的主題色 (深色模式)
             fig_k.update_layout(
-                plot_bgcolor='white',
-                paper_bgcolor='white',
-                xaxis=dict(showgrid=True, gridcolor='#EFEFEF', title="交易日期"),
-                yaxis=dict(showgrid=True, gridcolor='#EFEFEF', title="價格 (TWD)"),
+                xaxis=dict(title="交易日期"),
+                yaxis=dict(title="價格 (TWD)"),
                 xaxis_rangeslider_visible=False,  
                 margin=dict(l=0, r=0, t=20, b=0),
                 height=420,
@@ -270,12 +265,8 @@ if analyze_button and user_input:
                          orientation='h')
             fig.update_yaxes(categoryorder='array', categoryarray=df_plot['價格區間'])
             
-            # 【全新修改】：分價量圖底色同步全改為純白色 + 灰網格
+            # 【全新修改】：移除白底設定，回歸預設深色主題
             fig.update_layout(
-                plot_bgcolor='white',
-                paper_bgcolor='white',
-                xaxis=dict(showgrid=True, gridcolor='#EFEFEF'),
-                yaxis=dict(showgrid=True, gridcolor='#EFEFEF'),
                 yaxis_title="價格區間",
                 margin=dict(l=0, r=0, t=30, b=0), 
                 height=500
