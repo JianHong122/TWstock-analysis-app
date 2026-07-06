@@ -224,9 +224,10 @@ if st.session_state.analyzed_input:
             # --- 繪製 K 線與均線圖 ---
             st.subheader("📈 64日技術K線與移動平均線")
             col_ma1, col_ma2, col_ma3 = st.columns(3)
-            show_ma5 = col_ma1.checkbox("顯示 5MA (咖啡色)", value=True)
+            # 【修改點】：只保留 10MA 為 True，其他為 False
+            show_ma5 = col_ma1.checkbox("顯示 5MA (咖啡色)", value=False)
             show_ma10 = col_ma2.checkbox("顯示 10MA (亮藍綠)", value=True)
-            show_ma20 = col_ma3.checkbox("顯示 20MA (深藍色)", value=True)
+            show_ma20 = col_ma3.checkbox("顯示 20MA (深藍色)", value=False)
             
             date_strings = hist_64.index.strftime('%Y-%m-%d')
             fig_k = go.Figure()
@@ -252,13 +253,13 @@ if st.session_state.analyzed_input:
             if show_ma20:
                 fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA20'], name='20MA', line=dict(color='#0D47A1', width=1.5))) 
             
-            # 【重點修正 1】：設定 xaxis type 為 'category' 來自動略過沒有交易的假日與週末
+            # 設定 xaxis type 為 'category' 來自動略過沒有交易的假日與週末
             fig_k.update_layout(
                 xaxis=dict(
                     title="交易日期", 
                     type='category', 
                     tickmode='auto', 
-                    nticks=10  # 避免日期標籤太擠重疊
+                    nticks=10  
                 ),
                 yaxis=dict(title="價格 (TWD)"),
                 xaxis_rangeslider_visible=False,  
@@ -282,7 +283,7 @@ if st.session_state.analyzed_input:
                          orientation='h')
             fig.update_yaxes(categoryorder='array', categoryarray=df_plot['價格區間'])
             
-            # 【重點修正 3】：補回 autorange="reversed"，讓高價位在上方，低價位在下方
+            # 補回 autorange="reversed"，讓高價位在上方，低價位在下方
             fig.update_layout(
                 yaxis=dict(title="價格區間", autorange="reversed"),
                 margin=dict(l=0, r=0, t=30, b=0), 
