@@ -224,61 +224,61 @@ if st.session_state.analyzed_input:
             # 防誤觸縮放開關
             allow_zoom = st.checkbox("🔍 啟用圖表縮放與拖曳功能 (防手機誤觸)", value=False)
             
-            # --- 繪製 K 線與均線圖 ---
-            st.subheader("📈 64日技術K線與移動平均線")
-            col_ma1, col_ma2, col_ma3 = st.columns(3)
-            show_ma5 = col_ma1.checkbox("顯示 5MA (咖啡色)", value=False)
-            show_ma10 = col_ma2.checkbox("顯示 10MA (亮藍綠)", value=True)
-            show_ma20 = col_ma3.checkbox("顯示 20MA (深藍色)", value=False)
-            
-            date_strings = hist_64.index.strftime('%Y-%m-%d')
-            fig_k = go.Figure()
-            
-            # 實心純色的 K 線設計
-            fig_k.add_trace(go.Candlestick(
-                x=date_strings,
-                open=hist_64['Open'],
-                high=hist_64['High'],
-                low=hist_64['Low'],
-                close=hist_64['Close'],
-                name='K線',
-                increasing_line_color='#FF4B4B',  
-                increasing_fillcolor='#FF4B4B',   
-                decreasing_line_color='#00B050',  
-                decreasing_fillcolor='#00B050'    
-            ))
-            
-            if show_ma5:
-                fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA5'], name='5MA', line=dict(color='#7A431D', width=1.5))) 
-            if show_ma10:
-                fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA10'], name='10MA', line=dict(color='#00E5FF', width=1.5))) 
-            if show_ma20:
-                fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA20'], name='20MA', line=dict(color='#0D47A1', width=1.5))) 
-            
-            # 【核心修改】：設定 visible=False，完全省略 K線圖 的左邊與下面座標軸
-            fig_k.update_layout(
-                xaxis=dict(
-                    type='category', 
-                    visible=False   # 隱藏 X 軸說明、標籤與數字
-                ),
-                yaxis=dict(
-                    visible=False   # 隱藏 Y 軸說明、標籤與數字
-                ),
-                xaxis_rangeslider_visible=False,  
-                margin=dict(l=0, r=0, t=15, b=0), # 縮小邊距讓K線鋪滿畫面
-                height=420,
-                hovermode='x unified',             
-                legend=dict(orientation="h", y=1.05, x=0, yanchor="bottom") 
-            )
-            
-            # 套用縮放鎖定設定
-            fig_k.update_xaxes(fixedrange=not allow_zoom)
-            fig_k.update_yaxes(fixedrange=not allow_zoom)
-            
-            st.plotly_chart(fig_k, use_container_width=True)
+            # --- 【全新修改】：使用 st.container(border=True) 將整個 K線圖 區塊打包加上漂亮外框 ---
+            with st.container(border=True):
+                st.subheader("📈 64日技術K線與移動平均線")
+                col_ma1, col_ma2, col_ma3 = st.columns(3)
+                show_ma5 = col_ma1.checkbox("顯示 5MA (咖啡色)", value=False)
+                show_ma10 = col_ma2.checkbox("顯示 10MA (亮藍綠)", value=True)
+                show_ma20 = col_ma3.checkbox("顯示 20MA (深藍色)", value=False)
+                
+                date_strings = hist_64.index.strftime('%Y-%m-%d')
+                fig_k = go.Figure()
+                
+                # 實心純色的 K 線設計
+                fig_k.add_trace(go.Candlestick(
+                    x=date_strings,
+                    open=hist_64['Open'],
+                    high=hist_64['High'],
+                    low=hist_64['Low'],
+                    close=hist_64['Close'],
+                    name='K線',
+                    increasing_line_color='#FF4B4B',  
+                    increasing_fillcolor='#FF4B4B',   
+                    decreasing_line_color='#00B050',  
+                    decreasing_fillcolor='#00B050'    
+                ))
+                
+                if show_ma5:
+                    fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA5'], name='5MA', line=dict(color='#7A431D', width=1.5))) 
+                if show_ma10:
+                    fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA10'], name='10MA', line=dict(color='#00E5FF', width=1.5))) 
+                if show_ma20:
+                    fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA20'], name='20MA', line=dict(color='#0D47A1', width=1.5))) 
+                
+                # 設定 visible=False，完全省略 K線圖 的左邊與下面座標軸
+                fig_k.update_layout(
+                    xaxis=dict(
+                        type='category', 
+                        visible=False   
+                    ),
+                    yaxis=dict(
+                        visible=False   
+                    ),
+                    xaxis_rangeslider_visible=False,  
+                    margin=dict(l=4, r=4, t=15, b=4), # 微調內部邊距，配合外框視覺更緊湊
+                    height=420,
+                    hovermode='x unified',             
+                    legend=dict(orientation="h", y=1.05, x=0, yanchor="bottom") 
+                )
+                
+                # 套用縮放鎖定設定
+                fig_k.update_xaxes(fixedrange=not allow_zoom)
+                fig_k.update_yaxes(fixedrange=not allow_zoom)
+                
+                st.plotly_chart(fig_k, use_container_width=True)
 
-            # --- 繪製實體分價量分佈圖 ---
-            # 【核心修改】：用詞改為「64日分價量參考圖」
+            # --- 繪製實體分價量分佈圖 (維持不加外框) ---
             st.subheader("📊 64日分價量參考圖")
             df_plot = pd.DataFrame({
                 '價格區間': [item['label'] for item in all_intervals_disp],
@@ -291,14 +291,12 @@ if st.session_state.analyzed_input:
                          orientation='h')
             fig.update_yaxes(categoryorder='array', categoryarray=df_plot['價格區間'])
             
-            # 分價量圖維持不動：座標軸依然顯示，且高價在上方、低價在下方
             fig.update_layout(
                 yaxis=dict(title="價格區間", autorange="reversed"),
                 margin=dict(l=0, r=0, t=30, b=0), 
                 height=500
             )
             
-            # 套用縮放鎖定設定
             fig.update_xaxes(fixedrange=not allow_zoom)
             fig.update_yaxes(fixedrange=not allow_zoom)
             
