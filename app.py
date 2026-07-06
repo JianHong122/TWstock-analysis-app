@@ -221,7 +221,7 @@ if st.session_state.analyzed_input:
             # ==========================================
             st.success(f"✅ {target_name} ({yf_ticker}) 分析完成！最新股價: {current_price_round:.2f}")
             
-            # 【全新功能】：防誤觸縮放開關
+            # 防誤觸縮放開關
             allow_zoom = st.checkbox("🔍 啟用圖表縮放與拖曳功能 (防手機誤觸)", value=False)
             
             # --- 繪製 K 線與均線圖 ---
@@ -255,30 +255,31 @@ if st.session_state.analyzed_input:
             if show_ma20:
                 fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA20'], name='20MA', line=dict(color='#0D47A1', width=1.5))) 
             
-            # 設定 xaxis type 為 'category' 來自動略過沒有交易的假日與週末
+            # 【核心修改】：設定 visible=False，完全省略 K線圖 的左邊與下面座標軸
             fig_k.update_layout(
                 xaxis=dict(
-                    title="交易日期", 
                     type='category', 
-                    tickmode='auto', 
-                    nticks=10  
+                    visible=False   # 隱藏 X 軸說明、標籤與數字
                 ),
-                yaxis=dict(title="價格 (TWD)"),
+                yaxis=dict(
+                    visible=False   # 隱藏 Y 軸說明、標籤與數字
+                ),
                 xaxis_rangeslider_visible=False,  
-                margin=dict(l=0, r=0, t=20, b=0),
+                margin=dict(l=0, r=0, t=15, b=0), # 縮小邊距讓K線鋪滿畫面
                 height=420,
                 hovermode='x unified',             
                 legend=dict(orientation="h", y=1.05, x=0, yanchor="bottom") 
             )
             
-            # 【全新功能】：套用縮放鎖定設定
+            # 套用縮放鎖定設定
             fig_k.update_xaxes(fixedrange=not allow_zoom)
             fig_k.update_yaxes(fixedrange=not allow_zoom)
             
             st.plotly_chart(fig_k, use_container_width=True)
 
             # --- 繪製實體分價量分佈圖 ---
-            st.subheader("📊 64日實體分價量分佈圖")
+            # 【核心修改】：用詞改為「64日分價量參考圖」
+            st.subheader("📊 64日分價量參考圖")
             df_plot = pd.DataFrame({
                 '價格區間': [item['label'] for item in all_intervals_disp],
                 '累積成交量 (張)': [int(item['vol']) for item in all_intervals_disp],
@@ -290,14 +291,14 @@ if st.session_state.analyzed_input:
                          orientation='h')
             fig.update_yaxes(categoryorder='array', categoryarray=df_plot['價格區間'])
             
-            # 補回 autorange="reversed"，讓高價位在上方，低價位在下方
+            # 分價量圖維持不動：座標軸依然顯示，且高價在上方、低價在下方
             fig.update_layout(
                 yaxis=dict(title="價格區間", autorange="reversed"),
                 margin=dict(l=0, r=0, t=30, b=0), 
                 height=500
             )
             
-            # 【全新功能】：套用縮放鎖定設定
+            # 套用縮放鎖定設定
             fig.update_xaxes(fixedrange=not allow_zoom)
             fig.update_yaxes(fixedrange=not allow_zoom)
             
