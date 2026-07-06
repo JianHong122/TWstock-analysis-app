@@ -15,7 +15,7 @@ from openpyxl.utils import get_column_letter
 # ==========================================
 st.set_page_config(page_title="台股籌碼分析工具", page_icon="📈", layout="centered")
 st.title("📊 台股區間支撐壓力與法人籌碼分析")
-st.markdown("支援 **20級距全覽 (開5%_收30%_盤中均分65%)**、**Top 5 關鍵防守** 與 **五日法人買賣強度**")
+st.markdown("支援 **20級距全覽**、**Top 5 關鍵防守** 與 **五日法人買賣強度**")
 
 # ==========================================
 # 2. 讀取股票清單與抓取股價 (加入 Cache 防止被 Yahoo 封鎖)
@@ -56,7 +56,7 @@ def fetch_stock_history(ticker):
 # ==========================================
 # 3. 網頁 UI：使用者輸入區
 # ==========================================
-user_input = st.text_input("🔍 請輸入個股名稱或代號：", placeholder="例如: 穩懋 或 3105")
+user_input = st.text_input("🔍 請輸入個股名稱或代號：", placeholder="例如: 台積電 或 2330")
 analyze_button = st.button("🚀 開始分析", use_container_width=True)
 
 # 點擊分析按鈕後執行
