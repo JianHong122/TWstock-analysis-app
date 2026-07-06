@@ -15,7 +15,7 @@ from openpyxl.utils import get_column_letter
 # ==========================================
 st.set_page_config(page_title="台股籌碼分析工具", page_icon="📈", layout="centered")
 st.title("📊 台股區間支撐壓力與法人籌碼分析")
-st.markdown("支援 **OHLC加權 20級距全覽**、**Top 5 關鍵防守** 與 **五日法人買賣強度**")
+st.markdown("支援 **20級距全覽 (開5%_收30%_盤中均分65%)**、**Top 5 關鍵防守** 與 **五日法人買賣強度**")
 
 # ==========================================
 # 2. 讀取股票清單與抓取股價 (加入 Cache 防止被 Yahoo 封鎖)
@@ -44,7 +44,6 @@ name_to_ticker, list_loaded = load_stock_list()
 if not list_loaded:
     st.warning("⚠️ 找不到 'TW50100.xlsx'，請直接輸入股票代號 (例如: 2330)。")
 
-# 【全新加入】：Yahoo Finance 專用快取函數，資料暫存 5 分鐘 (300秒)
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_stock_history(ticker):
     try:
@@ -62,7 +61,7 @@ analyze_button = st.button("🚀 開始分析", use_container_width=True)
 
 # 點擊分析按鈕後執行
 if analyze_button and user_input:
-    with st.spinner('正在抓取大數據並進行運算，請稍候...'):
+    with st.spinner('正在根據證交所 Tick 檔位精算盤中籌碼分佈，請稍候...'):
         
         # 判斷輸入邏輯
         target_name = ""
@@ -90,10 +89,9 @@ if analyze_button and user_input:
             yf_ticker = f"{raw_ticker}.TW"
 
         # ==========================================
-        # 4. 抓取股價與運算 20 級距 (OHLC加權)
+        # 4. 抓取股價與運算 20 級距 (全新台股Tick攤平算法)
         # ==========================================
         try:
-            # 使用我們新寫的防封鎖 Cache 函數
             hist = fetch_stock_history(yf_ticker)
             
             if hist.empty and auto_fallback and raw_ticker:
@@ -108,9 +106,7 @@ if analyze_button and user_input:
                 st.stop()
             
             hist_64 = hist.tail(64).copy()
-            
-            # 將成交量由「股數」轉換為「張數」(除以 1000)
-            hist_64['Volume'] = hist_64['Volume'] / 1000
+            hist_64['Volume'] = hist_64['Volume'] / 1000  # 轉換為張數
             
             current_price = hist_64['Close'].dropna().iloc[-1]
             current_price_round = round(current_price, 2)
@@ -149,17 +145,55 @@ if analyze_button and user_input:
                     'vol': 0
                 })
             
-            # OHLC 加權分配
-            hist_64['Vol_OpenClose'] = hist_64['Volume'] * 0.35
-            hist_64['Vol_HighLow'] = hist_64['Volume'] * 0.15
+            # ==========================================
+            # 【核心修改】全新籌碼攤平邏輯：開5%、收30%、高低均分65%
+            # ==========================================
+            all_price_vols = []
             
-            df_open = pd.DataFrame({'Price': hist_64['Open'].round(2), 'Vol': hist_64['Vol_OpenClose']})
-            df_high = pd.DataFrame({'Price': hist_64['High'].round(2), 'Vol': hist_64['Vol_HighLow']})
-            df_low = pd.DataFrame({'Price': hist_64['Low'].round(2), 'Vol': hist_64['Vol_HighLow']})
-            df_close = pd.DataFrame({'Price': hist_64['Close'].round(2), 'Vol': hist_64['Vol_OpenClose']})
+            for index, row in hist_64.iterrows():
+                o = round(row['Open'], 2)
+                h = round(row['High'], 2)
+                l = round(row['Low'], 2)
+                c = round(row['Close'], 2)
+                v = row['Volume']
+                
+                # 防呆：確保 low 不會大於 high
+                if l > h: l, h = h, l 
+                
+                vol_open = v * 0.05
+                vol_close = v * 0.30
+                vol_dist_total = v * 0.65
+                
+                # 計算高低範圍內，所有符合台股跳動檔位的價格
+                ticks = []
+                curr = l
+                while curr <= h:
+                    ticks.append(curr)
+                    # 根據台股現行規定設定跳動檔位 (Tick Size)
+                    if curr < 10: ts = 0.01
+                    elif curr < 50: ts = 0.05
+                    elif curr < 100: ts = 0.1
+                    elif curr < 500: ts = 0.5
+                    elif curr < 1000: ts = 1.0
+                    else: ts = 5.0
+                    
+                    curr = round(curr + ts, 2)
+                
+                n_ticks = len(ticks)
+                vol_per_tick = vol_dist_total / n_ticks if n_ticks > 0 else 0
+                
+                # 將分配好的籌碼塞入暫存陣列
+                all_price_vols.append({'Price': o, 'Vol': vol_open})
+                all_price_vols.append({'Price': c, 'Vol': vol_close})
+                for t in ticks:
+                    all_price_vols.append({'Price': t, 'Vol': vol_per_tick})
+                    
+            # 將所有日期的細微檔位籌碼全部加總
+            df_all_vols = pd.DataFrame(all_price_vols)
+            price_vol = df_all_vols.groupby('Price')['Vol'].sum()
+            # ==========================================
             
-            price_vol = pd.concat([df_open, df_high, df_low, df_close]).groupby('Price')['Vol'].sum()
-            
+            # 將精算後的價量分類投遞到 20 個抽屜中
             for price, vol in price_vol.items():
                 if price >= max_price: bins_data[-1]['vol'] += vol
                 elif price <= min_price: bins_data[0]['vol'] += vol
@@ -182,7 +216,6 @@ if analyze_button and user_input:
             # ==========================================
             st.success(f"✅ {target_name} ({yf_ticker}) 分析完成！最新股價: {current_price_round:.2f}")
             
-            # --- 繪製互動式手機圖表 (Plotly) ---
             st.subheader("📊 64日實體分價量分佈圖")
             df_plot = pd.DataFrame({
                 '價格區間': [item['label'] for item in all_intervals_disp],
@@ -197,7 +230,6 @@ if analyze_button and user_input:
             fig.update_layout(yaxis=dict(autorange="reversed"), margin=dict(l=0, r=0, t=30, b=0), height=500)
             st.plotly_chart(fig, use_container_width=True)
 
-            # --- 顯示 Top 5 支撐壓力 ---
             st.subheader("🎯 關鍵支撐與壓力 (Top 5)")
             col1, col2 = st.columns(2)
             with col1:
