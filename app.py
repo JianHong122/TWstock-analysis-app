@@ -18,7 +18,7 @@ st.title("📊 台股區間支撐壓力與法人籌碼分析")
 st.markdown("支援 **OHLC加權 20級距全覽**、**Top 5 關鍵防守** 與 **五日法人買賣強度**")
 
 # ==========================================
-# 2. 讀取股票清單 (使用快取加速載入)
+# 2. 讀取股票清單與抓取股價 (加入 Cache 防止被 Yahoo 封鎖)
 # ==========================================
 @st.cache_data
 def load_stock_list():
@@ -44,10 +44,20 @@ name_to_ticker, list_loaded = load_stock_list()
 if not list_loaded:
     st.warning("⚠️ 找不到 'TW50100.xlsx'，請直接輸入股票代號 (例如: 2330)。")
 
+# 【全新加入】：Yahoo Finance 專用快取函數，資料暫存 5 分鐘 (300秒)
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_stock_history(ticker):
+    try:
+        stock_data = yf.Ticker(ticker)
+        hist = stock_data.history(period="6mo")
+        return hist
+    except Exception:
+        return pd.DataFrame()
+
 # ==========================================
 # 3. 網頁 UI：使用者輸入區
 # ==========================================
-user_input = st.text_input("🔍 請輸入個股名稱或代號：", placeholder="例如: 台積電 或 2330")
+user_input = st.text_input("🔍 請輸入個股名稱或代號：", placeholder="例如: 穩懋 或 3105")
 analyze_button = st.button("🚀 開始分析", use_container_width=True)
 
 # 點擊分析按鈕後執行
@@ -83,23 +93,23 @@ if analyze_button and user_input:
         # 4. 抓取股價與運算 20 級距 (OHLC加權)
         # ==========================================
         try:
-            stock_data = yf.Ticker(yf_ticker)
-            hist = stock_data.history(period="6mo")
+            # 使用我們新寫的防封鎖 Cache 函數
+            hist = fetch_stock_history(yf_ticker)
             
             if hist.empty and auto_fallback and raw_ticker:
                 yf_ticker_two = f"{raw_ticker}.TWO"
-                stock_data = yf.Ticker(yf_ticker_two)
-                hist = stock_data.history(period="6mo")
-                if not hist.empty:
+                hist_two = fetch_stock_history(yf_ticker_two)
+                if not hist_two.empty:
                     yf_ticker = yf_ticker_two
+                    hist = hist_two
             
             if hist.empty:
-                st.error("❌ 無法取得歷史資料。請確認該股票是否已下市或代號錯誤。")
+                st.error("❌ 無法取得歷史資料。可能是股票下市、代號錯誤，或 Yahoo API 暫時阻擋，請 5 分鐘後再試。")
                 st.stop()
             
             hist_64 = hist.tail(64).copy()
             
-            # 【核心修改】：將成交量由「股數」轉換為「張數」(除以 1000)
+            # 將成交量由「股數」轉換為「張數」(除以 1000)
             hist_64['Volume'] = hist_64['Volume'] / 1000
             
             current_price = hist_64['Close'].dropna().iloc[-1]
@@ -176,19 +186,14 @@ if analyze_button and user_input:
             st.subheader("📊 64日實體分價量分佈圖")
             df_plot = pd.DataFrame({
                 '價格區間': [item['label'] for item in all_intervals_disp],
-                '累積成交量 (張)': [int(item['vol']) for item in all_intervals_disp], # 改為張數
+                '累積成交量 (張)': [int(item['vol']) for item in all_intervals_disp],
                 '標記': ['現價所在' if item['is_current'] else '一般區間' for item in all_intervals_disp]
             })
             
-            # 使用 Plotly 畫水平長條圖
             fig = px.bar(df_plot, x='累積成交量 (張)', y='價格區間', color='標記', 
                          color_discrete_map={'現價所在': '#FF4B4B', '一般區間': '#60B4FF'},
                          orientation='h')
-                         
-            # 強制鎖定價格排序，避免被 Plotly 自動按字首排序
             fig.update_yaxes(categoryorder='array', categoryarray=df_plot['價格區間'])
-            
-            # 反轉 Y 軸讓高價在上
             fig.update_layout(yaxis=dict(autorange="reversed"), margin=dict(l=0, r=0, t=30, b=0), height=500)
             st.plotly_chart(fig, use_container_width=True)
 
@@ -198,7 +203,6 @@ if analyze_button and user_input:
             with col1:
                 st.write("**⬆️ 向上方壓力區**")
                 for item in top_5_above_disp:
-                    # 單位替換為「張」
                     st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
             with col2:
                 st.write("**⬇️ 向下方支撐區**")
@@ -227,7 +231,6 @@ if analyze_button and user_input:
                             df_vol = pd.DataFrame(res_vol['data'], columns=res_vol['fields'])
                             vol_val = dict(zip(df_vol['日期'], df_vol['成交股數'])).get(tw_date_str, "0")
                             daily_vol_shares = int(vol_val.replace(',', '')) if isinstance(vol_val, str) else int(vol_val)
-                            # 轉換為張數
                             daily_vol = round(daily_vol_shares / 1000)
                     except: pass
                     
@@ -239,12 +242,10 @@ if analyze_button and user_input:
                             if not target_row.empty:
                                 buy_col = '三大法人買賣超股數' if '三大法人買賣超股數' in df_t86.columns else df_t86.columns[-1]
                                 net_buy_shares = int(target_row[buy_col].values[0].replace(',', ''))
-                                # 轉換為張數
                                 net_buy = round(net_buy_shares / 1000)
                     except: pass
                     
                     if daily_vol == 0: 
-                        # 取用前段已被除以1000的 Volume 資料
                         daily_vol = int(hist_64.loc[d, 'Volume']) 
                         
                     daily_records.append({'date_disp': d.strftime('%Y-%m-%d'), 'net_buy': net_buy, 'volume': daily_vol})
@@ -271,7 +272,6 @@ if analyze_button and user_input:
             st.divider()
             st.subheader("💾 匯出完整 Excel 報表")
             
-            # 整理要存檔的 DataFrame，更新所有「股」為「張」
             df_sr_excel = pd.DataFrame([{
                 '項次': i+1, '價格級距區間 (TWD)': item['disp_label'], '累積成交量 (張)': int(item['vol'])
             } for i, item in enumerate(all_intervals_disp)])
@@ -282,7 +282,6 @@ if analyze_button and user_input:
                 [{'位置': '⬇️ 向下支撐區', '價格級距區間': b['disp_label'], '累積成交量 (張)': int(b['vol'])} for b in top_5_below_disp]
             )
 
-            # 在記憶體中建立 Excel
             output = io.BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 df_sr_excel.to_excel(writer, sheet_name='區間分價量總表', index=False)
@@ -300,7 +299,7 @@ if analyze_button and user_input:
                 chart = BarChart()
                 chart.type, chart.style = "bar", 10
                 chart.title = f"{target_name} 64日分價量分佈圖"
-                chart.x_axis.title, chart.y_axis.title = "價格級距區間 (TWD)", "累積成交量 (張)" # 更新軸標題
+                chart.x_axis.title, chart.y_axis.title = "價格級距區間 (TWD)", "累積成交量 (張)" 
                 chart.x_axis.scaling.orientation, chart.y_axis.crosses = "maxMin", "max"
                 chart.height, chart.width = max(10, len(df_sr_excel) * 0.5) * 1.5, 16 * 1.5
                 
@@ -309,7 +308,6 @@ if analyze_button and user_input:
                 chart.set_categories(Reference(sheet1, min_col=2, min_row=2, max_row=max_r))
                 sheet1.add_chart(chart, "E2")
             
-            # 產生下載按鈕
             safe_target_name = re.sub(r'[\\/*?:"<>|]', '_', target_name)
             today_str = datetime.now().strftime("%Y%m%d")
             
