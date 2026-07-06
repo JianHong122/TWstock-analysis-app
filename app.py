@@ -70,7 +70,7 @@ analyze_button = st.button("🚀 開始分析", use_container_width=True)
 if analyze_button and user_input:
     st.session_state.analyzed_input = user_input
 
-# 只要記憶體中有值，就顯示分析結果 (這樣打勾時就不會消失了)
+# 只要記憶體中有值，就顯示分析結果
 if st.session_state.analyzed_input:
     current_target_input = st.session_state.analyzed_input
     
@@ -221,10 +221,12 @@ if st.session_state.analyzed_input:
             # ==========================================
             st.success(f"✅ {target_name} ({yf_ticker}) 分析完成！最新股價: {current_price_round:.2f}")
             
+            # 【全新功能】：防誤觸縮放開關
+            allow_zoom = st.checkbox("🔍 啟用圖表縮放與拖曳功能 (防手機誤觸)", value=False)
+            
             # --- 繪製 K 線與均線圖 ---
             st.subheader("📈 64日技術K線與移動平均線")
             col_ma1, col_ma2, col_ma3 = st.columns(3)
-            # 【修改點】：只保留 10MA 為 True，其他為 False
             show_ma5 = col_ma1.checkbox("顯示 5MA (咖啡色)", value=False)
             show_ma10 = col_ma2.checkbox("顯示 10MA (亮藍綠)", value=True)
             show_ma20 = col_ma3.checkbox("顯示 20MA (深藍色)", value=False)
@@ -240,10 +242,10 @@ if st.session_state.analyzed_input:
                 low=hist_64['Low'],
                 close=hist_64['Close'],
                 name='K線',
-                increasing_line_color='#FF4B4B',  # 上漲外框紅
-                increasing_fillcolor='#FF4B4B',   # 上漲實體紅
-                decreasing_line_color='#00B050',  # 下跌外框綠
-                decreasing_fillcolor='#00B050'    # 下跌實體綠
+                increasing_line_color='#FF4B4B',  
+                increasing_fillcolor='#FF4B4B',   
+                decreasing_line_color='#00B050',  
+                decreasing_fillcolor='#00B050'    
             ))
             
             if show_ma5:
@@ -268,6 +270,11 @@ if st.session_state.analyzed_input:
                 hovermode='x unified',             
                 legend=dict(orientation="h", y=1.05, x=0, yanchor="bottom") 
             )
+            
+            # 【全新功能】：套用縮放鎖定設定
+            fig_k.update_xaxes(fixedrange=not allow_zoom)
+            fig_k.update_yaxes(fixedrange=not allow_zoom)
+            
             st.plotly_chart(fig_k, use_container_width=True)
 
             # --- 繪製實體分價量分佈圖 ---
@@ -289,6 +296,11 @@ if st.session_state.analyzed_input:
                 margin=dict(l=0, r=0, t=30, b=0), 
                 height=500
             )
+            
+            # 【全新功能】：套用縮放鎖定設定
+            fig.update_xaxes(fixedrange=not allow_zoom)
+            fig.update_yaxes(fixedrange=not allow_zoom)
+            
             st.plotly_chart(fig, use_container_width=True)
 
             st.subheader("🎯 關鍵支撐與壓力 (Top 5)")
