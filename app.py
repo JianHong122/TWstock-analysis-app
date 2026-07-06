@@ -7,6 +7,7 @@ import re
 import io
 from datetime import datetime
 import plotly.express as px
+import plotly.graph_objects as go  # 【全新導入】用於繪製專業K線與均線
 from openpyxl.chart import BarChart, Reference
 from openpyxl.utils import get_column_letter
 
@@ -15,7 +16,7 @@ from openpyxl.utils import get_column_letter
 # ==========================================
 st.set_page_config(page_title="台股籌碼分析工具", page_icon="📈", layout="centered")
 st.title("📊 台股區間支撐壓力與法人籌碼分析")
-st.markdown("支援 **20級距全覽**、**Top 5 關鍵防守** 與 **五日法人買賣強度**")
+st.markdown("支援 **技術K線均線**、**20級距全覽**、**Top 5 關鍵防守** 與 **五日法人買賣強度**")
 
 # ==========================================
 # 2. 讀取股票清單與抓取股價 (加入 Cache 防止被 Yahoo 封鎖)
@@ -89,7 +90,7 @@ if analyze_button and user_input:
             yf_ticker = f"{raw_ticker}.TW"
 
         # ==========================================
-        # 4. 抓取股價與運算 20 級距 (全新台股Tick攤平算法)
+        # 4. 抓取股價與運算技術指標、20 級距
         # ==========================================
         try:
             hist = fetch_stock_history(yf_ticker)
@@ -105,6 +106,12 @@ if analyze_button and user_input:
                 st.error("❌ 無法取得歷史資料。可能是股票下市、代號錯誤，或 Yahoo API 暫時阻擋，請 5 分鐘後再試。")
                 st.stop()
             
+            # 【全新修改】：在切分 64 天前，先利用半年資料精算 5MA、10MA、20MA，確保歷史連續性
+            hist['MA5'] = hist['Close'].rolling(window=5).mean()
+            hist['MA10'] = hist['Close'].rolling(window=10).mean()
+            hist['MA20'] = hist['Close'].rolling(window=20).mean()
+            
+            # 裁切出近 64 日資料
             hist_64 = hist.tail(64).copy()
             hist_64['Volume'] = hist_64['Volume'] / 1000  # 轉換為張數
             
@@ -145,11 +152,8 @@ if analyze_button and user_input:
                     'vol': 0
                 })
             
-            # ==========================================
-            # 【核心修改】全新籌碼攤平邏輯：開5%、收30%、高低均分65%
-            # ==========================================
+            # 全新籌碼攤平邏輯：開5%、收30%、高低均分65%
             all_price_vols = []
-            
             for index, row in hist_64.iterrows():
                 o = round(row['Open'], 2)
                 h = round(row['High'], 2)
@@ -157,19 +161,16 @@ if analyze_button and user_input:
                 c = round(row['Close'], 2)
                 v = row['Volume']
                 
-                # 防呆：確保 low 不會大於 high
                 if l > h: l, h = h, l 
                 
                 vol_open = v * 0.05
                 vol_close = v * 0.30
                 vol_dist_total = v * 0.65
                 
-                # 計算高低範圍內，所有符合台股跳動檔位的價格
                 ticks = []
                 curr = l
                 while curr <= h:
                     ticks.append(curr)
-                    # 根據台股現行規定設定跳動檔位 (Tick Size)
                     if curr < 10: ts = 0.01
                     elif curr < 50: ts = 0.05
                     elif curr < 100: ts = 0.1
@@ -182,18 +183,14 @@ if analyze_button and user_input:
                 n_ticks = len(ticks)
                 vol_per_tick = vol_dist_total / n_ticks if n_ticks > 0 else 0
                 
-                # 將分配好的籌碼塞入暫存陣列
                 all_price_vols.append({'Price': o, 'Vol': vol_open})
                 all_price_vols.append({'Price': c, 'Vol': vol_close})
                 for t in ticks:
                     all_price_vols.append({'Price': t, 'Vol': vol_per_tick})
                     
-            # 將所有日期的細微檔位籌碼全部加總
             df_all_vols = pd.DataFrame(all_price_vols)
             price_vol = df_all_vols.groupby('Price')['Vol'].sum()
-            # ==========================================
             
-            # 將精算後的價量分類投遞到 20 個抽屜中
             for price, vol in price_vol.items():
                 if price >= max_price: bins_data[-1]['vol'] += vol
                 elif price <= min_price: bins_data[0]['vol'] += vol
@@ -216,6 +213,41 @@ if analyze_button and user_input:
             # ==========================================
             st.success(f"✅ {target_name} ({yf_ticker}) 分析完成！最新股價: {current_price_round:.2f}")
             
+            # --- 【全新功能】繪製互動式近 64 日 K線與均線圖 (Plotly Graph Objects) ---
+            st.subheader("📈 64日技術K線與移動平均線 (5MA/10MA/20MA)")
+            
+            date_strings = hist_64.index.strftime('%Y-%m-%d')
+            fig_k = go.Figure()
+            
+            # 加上K線 trace (台股傳統：紅漲綠跌)
+            fig_k.add_trace(go.Candlestick(
+                x=date_strings,
+                open=hist_64['Open'],
+                high=hist_64['High'],
+                low=hist_64['Low'],
+                close=hist_64['Close'],
+                name='K線',
+                increasing_line_color='#FF4B4B',  # 上漲紅
+                decreasing_line_color='#00B050'   # 下跌綠
+            ))
+            
+            # 加上 5MA、10MA、20MA 移動平均線
+            fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA5'], name='5MA', line=dict(color='#FF9900', width=1.5)))
+            fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA10'], name='10MA', line=dict(color='#9900CC', width=1.5)))
+            fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA20'], name='20MA', line=dict(color='#0066FF', width=1.5)))
+            
+            fig_k.update_layout(
+                xaxis_title="交易日期",
+                yaxis_title="價格 (TWD)",
+                xaxis_rangeslider_visible=False,  # 隱藏下方範圍滑桿以擴大可視面積
+                margin=dict(l=0, r=0, t=20, b=0),
+                height=420,
+                hovermode='x unified',             # 移動滑鼠時自動對齊並同步秀出當天所有指標數值
+                legend=dict(orientation="h", ylink="y", y=1.1, x=0) # 圖例置頂橫排
+            )
+            st.plotly_chart(fig_k, use_container_width=True)
+
+            # --- 繪製實體分價量分佈圖 ---
             st.subheader("📊 64日實體分價量分佈圖")
             df_plot = pd.DataFrame({
                 '價格區間': [item['label'] for item in all_intervals_disp],
