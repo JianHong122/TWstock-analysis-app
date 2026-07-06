@@ -7,7 +7,7 @@ import re
 import io
 from datetime import datetime
 import plotly.express as px
-import plotly.graph_objects as go  # 【全新導入】用於繪製專業K線與均線
+import plotly.graph_objects as go  
 from openpyxl.chart import BarChart, Reference
 from openpyxl.utils import get_column_letter
 
@@ -106,7 +106,7 @@ if analyze_button and user_input:
                 st.error("❌ 無法取得歷史資料。可能是股票下市、代號錯誤，或 Yahoo API 暫時阻擋，請 5 分鐘後再試。")
                 st.stop()
             
-            # 【全新修改】：在切分 64 天前，先利用半年資料精算 5MA、10MA、20MA，確保歷史連續性
+            # 在切分 64 天前，先利用半年資料精算 5MA、10MA、20MA，確保歷史連續性
             hist['MA5'] = hist['Close'].rolling(window=5).mean()
             hist['MA10'] = hist['Close'].rolling(window=10).mean()
             hist['MA20'] = hist['Close'].rolling(window=20).mean()
@@ -213,13 +213,13 @@ if analyze_button and user_input:
             # ==========================================
             st.success(f"✅ {target_name} ({yf_ticker}) 分析完成！最新股價: {current_price_round:.2f}")
             
-            # --- 【全新功能】繪製互動式近 64 日 K線與均線圖 (Plotly Graph Objects) ---
+            # --- 繪製 K 線與均線圖 ---
             st.subheader("📈 64日技術K線與移動平均線 (5MA/10MA/20MA)")
             
             date_strings = hist_64.index.strftime('%Y-%m-%d')
             fig_k = go.Figure()
             
-            # 加上K線 trace (台股傳統：紅漲綠跌)
+            # 加上 K 線 trace (台股傳統：紅漲綠跌)
             fig_k.add_trace(go.Candlestick(
                 x=date_strings,
                 open=hist_64['Open'],
@@ -227,8 +227,8 @@ if analyze_button and user_input:
                 low=hist_64['Low'],
                 close=hist_64['Close'],
                 name='K線',
-                increasing_line_color='#FF4B4B',  # 上漲紅
-                decreasing_line_color='#00B050'   # 下跌綠
+                increasing_line_color='#FF4B4B',  
+                decreasing_line_color='#00B050'   
             ))
             
             # 加上 5MA、10MA、20MA 移動平均線
@@ -239,11 +239,11 @@ if analyze_button and user_input:
             fig_k.update_layout(
                 xaxis_title="交易日期",
                 yaxis_title="價格 (TWD)",
-                xaxis_rangeslider_visible=False,  # 隱藏下方範圍滑桿以擴大可視面積
+                xaxis_rangeslider_visible=False,  
                 margin=dict(l=0, r=0, t=20, b=0),
                 height=420,
-                hovermode='x unified',             # 移動滑鼠時自動對齊並同步秀出當天所有指標數值
-                legend=dict(orientation="h", ylink="y", y=1.1, x=0) # 圖例置頂橫排
+                hovermode='x unified',             
+                legend=dict(orientation="h", y=1.05, x=0, yanchor="bottom") 
             )
             st.plotly_chart(fig_k, use_container_width=True)
 
