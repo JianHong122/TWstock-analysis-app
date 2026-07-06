@@ -12,6 +12,12 @@ from openpyxl.chart import BarChart, Reference
 from openpyxl.utils import get_column_letter
 
 # ==========================================
+# 0. 初始化 Session State (記憶體)，解決打勾重新整理的問題
+# ==========================================
+if 'analyzed_input' not in st.session_state:
+    st.session_state.analyzed_input = None
+
+# ==========================================
 # 1. 網頁基本設定 (支援手機版 RWD)
 # ==========================================
 st.set_page_config(page_title="台股籌碼分析工具", page_icon="📈", layout="centered")
@@ -60,8 +66,14 @@ def fetch_stock_history(ticker):
 user_input = st.text_input("🔍 請輸入個股名稱或代號：", placeholder="例如: 台積電 或 2330")
 analyze_button = st.button("🚀 開始分析", use_container_width=True)
 
-# 點擊分析按鈕後執行
+# 當按鈕被按下時，將輸入值存入記憶體中
 if analyze_button and user_input:
+    st.session_state.analyzed_input = user_input
+
+# 只要記憶體中有值，就顯示分析結果 (這樣打勾時就不會消失了)
+if st.session_state.analyzed_input:
+    current_target_input = st.session_state.analyzed_input
+    
     with st.spinner('正在根據證交所 Tick 檔位精算盤中籌碼分佈，請稍候...'):
         
         # 判斷輸入邏輯
@@ -70,19 +82,19 @@ if analyze_button and user_input:
         raw_ticker = ""
         auto_fallback = True
         
-        matched_names = [name for name in name_to_ticker.keys() if user_input in name] if list_loaded else []
+        matched_names = [name for name in name_to_ticker.keys() if current_target_input in name] if list_loaded else []
         
         if len(matched_names) == 0:
-            target_name = f"自訂代號 ({user_input})"
-            if user_input.lower().endswith('.tw') or user_input.lower().endswith('.two'):
-                yf_ticker = user_input.upper()
+            target_name = f"自訂代號 ({current_target_input})"
+            if current_target_input.lower().endswith('.tw') or current_target_input.lower().endswith('.two'):
+                yf_ticker = current_target_input.upper()
                 auto_fallback = False 
-                raw_ticker = user_input.split('.')[0]
+                raw_ticker = current_target_input.split('.')[0]
             else:
-                raw_ticker = user_input
+                raw_ticker = current_target_input
                 yf_ticker = f"{raw_ticker}.TW"
         elif len(matched_names) > 1:
-            st.error(f"⚠️ 找到多檔包含 '{user_input}' 的股票，請輸入更明確的名稱：{', '.join(matched_names)}")
+            st.error(f"⚠️ 找到多檔包含 '{current_target_input}' 的股票，請輸入更明確的名稱：{', '.join(matched_names)}")
             st.stop()
         else:
             target_name = matched_names[0]
@@ -219,7 +231,7 @@ if analyze_button and user_input:
             date_strings = hist_64.index.strftime('%Y-%m-%d')
             fig_k = go.Figure()
             
-            # 【全新修改】：實心純色的 K 線設計
+            # 實心純色的 K 線設計
             fig_k.add_trace(go.Candlestick(
                 x=date_strings,
                 open=hist_64['Open'],
@@ -240,9 +252,14 @@ if analyze_button and user_input:
             if show_ma20:
                 fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA20'], name='20MA', line=dict(color='#0D47A1', width=1.5))) 
             
-            # 【全新修改】：移除白底設定，回歸 Streamlit 預設的主題色 (深色模式)
+            # 【重點修正 1】：設定 xaxis type 為 'category' 來自動略過沒有交易的假日與週末
             fig_k.update_layout(
-                xaxis=dict(title="交易日期"),
+                xaxis=dict(
+                    title="交易日期", 
+                    type='category', 
+                    tickmode='auto', 
+                    nticks=10  # 避免日期標籤太擠重疊
+                ),
                 yaxis=dict(title="價格 (TWD)"),
                 xaxis_rangeslider_visible=False,  
                 margin=dict(l=0, r=0, t=20, b=0),
@@ -265,9 +282,9 @@ if analyze_button and user_input:
                          orientation='h')
             fig.update_yaxes(categoryorder='array', categoryarray=df_plot['價格區間'])
             
-            # 【全新修改】：移除白底設定，回歸預設深色主題
+            # 【重點修正 3】：補回 autorange="reversed"，讓高價位在上方，低價位在下方
             fig.update_layout(
-                yaxis_title="價格區間",
+                yaxis=dict(title="價格區間", autorange="reversed"),
                 margin=dict(l=0, r=0, t=30, b=0), 
                 height=500
             )
