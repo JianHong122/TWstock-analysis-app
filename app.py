@@ -122,6 +122,23 @@ if st.session_state.analyzed_input:
             hist['MA5'] = hist['Close'].rolling(window=5).mean()
             hist['MA10'] = hist['Close'].rolling(window=10).mean()
             hist['MA20'] = hist['Close'].rolling(window=20).mean()
+
+            # --- 貼在 MA20 計算下方 ---
+            # KD 指標計算 (9日)
+            low_min = hist['Low'].rolling(window=9).min()
+            high_max = hist['High'].rolling(window=9).max()
+            rsv = (hist['Close'] - low_min) / (high_max - low_min + 1e-9) * 100
+            hist['K'] = rsv.ewm(com=2, adjust=False).mean()
+            hist['D'] = hist['K'].ewm(com=2, adjust=False).mean()
+            
+            # MACD 計算
+            ema12 = hist['Close'].ewm(span=12, adjust=False).mean()
+            ema26 = hist['Close'].ewm(span=26, adjust=False).mean()
+            hist['DIF'] = ema12 - ema26
+            hist['MACD'] = hist['DIF'].ewm(span=9, adjust=False).mean()
+            
+            # 取得最新一天的數值，用於顯示
+            latest = hist.iloc[-1]
             
             # 裁切出近 64 日資料
             hist_64 = hist.tail(64).copy()
@@ -313,6 +330,25 @@ if st.session_state.analyzed_input:
                 for item in top_5_below_disp:
                     st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
 
+
+            # 判斷指標趨勢
+            ma_trend = "✅ 多頭" if latest['MA5'] > latest['MA10'] > latest['MA20'] else ("⚠️ 空頭" if latest['MA5'] < latest['MA10'] < latest['MA20'] else "⭕ 未形成趨勢")
+            kd_trend = "✅ 多" if latest['K'] > latest['D'] else "⚠️ 空"
+            macd_trend = "✅ 多" if latest['DIF'] > latest['MACD'] else "⚠️ 空"
+            
+            st.subheader("📊 技術指標參考")
+            indicator_data = pd.DataFrame({
+                "項目": ["均線狀況", "KD狀況", "MACD狀況"],
+                "趨勢": [ma_trend, kd_trend, macd_trend],
+                "數值細項": [
+                    f"5MA:{latest['MA5']:.1f} / 10MA:{latest['MA10']:.1f} / 20MA:{latest['MA20']:.1f}",
+                    f"K:{latest['K']:.2f} / D:{latest['D']:.2f}",
+                    f"DIF:{latest['DIF']:.2f} / MACD:{latest['MACD']:.2f}"
+                ]
+            })
+            st.table(indicator_data)
+
+            
             # ==========================================
             # 6. 法人買賣強度
             # ==========================================
