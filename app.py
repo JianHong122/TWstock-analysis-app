@@ -8,6 +8,7 @@ import io
 from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go  
+from plotly.subplots import make_subplots # 【新增】載入繪製多層子圖表的功能
 from openpyxl.chart import BarChart, Reference
 from openpyxl.utils import get_column_letter
 
@@ -74,7 +75,7 @@ if analyze_button and user_input:
 if st.session_state.analyzed_input:
     current_target_input = st.session_state.analyzed_input
     
-    with st.spinner('正在根據證交所 Tick 檔位精算盤中籌碼分佈，請稍候...'):
+    with st.spinner('正在精算盤中籌碼分佈，請稍候...'):
         
         # 判斷輸入邏輯
         target_name = ""
@@ -123,7 +124,6 @@ if st.session_state.analyzed_input:
             hist['MA10'] = hist['Close'].rolling(window=10).mean()
             hist['MA20'] = hist['Close'].rolling(window=20).mean()
 
-            # --- 貼在 MA20 計算下方 ---
             # KD 指標計算 (9日)
             low_min = hist['Low'].rolling(window=9).min()
             high_max = hist['High'].rolling(window=9).max()
@@ -136,6 +136,7 @@ if st.session_state.analyzed_input:
             ema26 = hist['Close'].ewm(span=26, adjust=False).mean()
             hist['DIF'] = ema12 - ema26
             hist['MACD'] = hist['DIF'].ewm(span=9, adjust=False).mean()
+            hist['OSC'] = (hist['DIF'] - hist['MACD']) * 2 # 【新增】計算 MACD 的柱狀體 (OSC)
             
             # 取得最新一天的數值，用於顯示
             latest = hist.iloc[-1]
@@ -143,7 +144,53 @@ if st.session_state.analyzed_input:
             # 裁切出近 64 日資料
             hist_64 = hist.tail(64).copy()
             hist_64['Volume'] = hist_64['Volume'] / 1000  # 轉換為張數
+            hist_64['NetBuy'] = 0.0 # 【新增】預先建立法人買賣超欄位
             
+            # --- 【新增】將抓取法人買賣超的邏輯移至繪圖前，並改為 20 日 ---
+            last_20_dates = hist_64.index[-20:]
+            daily_records = []
+            
+            if not yf_ticker.endswith('.TWO'):
+                progress_bar = st.progress(0, text="📡 正在抓取近 20 日法人買賣超數據...")
+                for idx, d in enumerate(last_20_dates):
+                    month_str, date_str = d.strftime('%Y%m01'), d.strftime('%Y%m%d')
+                    tw_date_str = f"{d.year - 1911}/{d.strftime('%m/%d')}"
+                    daily_vol, net_buy = 0, 0
+                    
+                    try:
+                        res_vol = requests.get(f"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?date={month_str}&stockNo={raw_ticker}", timeout=3).json()
+                        if res_vol.get('stat') == 'OK':
+                            df_vol = pd.DataFrame(res_vol['data'], columns=res_vol['fields'])
+                            vol_val = dict(zip(df_vol['日期'], df_vol['成交股數'])).get(tw_date_str, "0")
+                            daily_vol_shares = int(vol_val.replace(',', '')) if isinstance(vol_val, str) else int(vol_val)
+                            daily_vol = round(daily_vol_shares / 1000)
+                    except: pass
+                    
+                    try:
+                        res_t86 = requests.get(f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_str}&selectType=ALL", timeout=3).json()
+                        if res_t86.get('stat') == 'OK':
+                            df_t86 = pd.DataFrame(res_t86['data'], columns=res_t86['fields'])
+                            target_row = df_t86[df_t86['證券代號'] == raw_ticker]
+                            if not target_row.empty:
+                                buy_col = '三大法人買賣超股數' if '三大法人買賣超股數' in df_t86.columns else df_t86.columns[-1]
+                                net_buy_shares = int(target_row[buy_col].values[0].replace(',', ''))
+                                net_buy = round(net_buy_shares / 1000)
+                    except: pass
+                    
+                    if daily_vol == 0: 
+                        daily_vol = int(hist_64.loc[d, 'Volume']) 
+                        
+                    daily_records.append({'date_disp': d.strftime('%Y-%m-%d'), 'net_buy': net_buy, 'volume': daily_vol})
+                    hist_64.loc[d, 'NetBuy'] = net_buy # 將抓到的法人買賣填入資料表中
+                    
+                    # 更新進度條
+                    progress_bar.progress((idx + 1) / 20, text=f"📡 正在抓取近 20 日法人買賣超數據 ({idx+1}/20)...")
+                progress_bar.empty()
+            else:
+                for d in last_20_dates:
+                    daily_records.append({'date_disp': d.strftime('%Y-%m-%d'), 'net_buy': 0, 'volume': int(hist_64.loc[d, 'Volume'])})
+
+            # --- 籌碼區間計算 ---
             current_price = hist_64['Close'].dropna().iloc[-1]
             current_price_round = round(current_price, 2)
             
@@ -184,17 +231,9 @@ if st.session_state.analyzed_input:
             # 籌碼攤平邏輯
             all_price_vols = []
             for index, row in hist_64.iterrows():
-                o = round(row['Open'], 2)
-                h = round(row['High'], 2)
-                l = round(row['Low'], 2)
-                c = round(row['Close'], 2)
-                v = row['Volume']
-                
+                o, h, l, c, v = round(row['Open'], 2), round(row['High'], 2), round(row['Low'], 2), round(row['Close'], 2), row['Volume']
                 if l > h: l, h = h, l 
-                
-                vol_open = v * 0.05
-                vol_close = v * 0.30
-                vol_dist_total = v * 0.65
+                vol_open, vol_close, vol_dist_total = v * 0.05, v * 0.30, v * 0.65
                 
                 ticks = []
                 curr = l
@@ -206,7 +245,6 @@ if st.session_state.analyzed_input:
                     elif curr < 500: ts = 0.5
                     elif curr < 1000: ts = 1.0
                     else: ts = 5.0
-                    
                     curr = round(curr + ts, 2)
                 
                 n_ticks = len(ticks)
@@ -229,7 +267,6 @@ if st.session_state.analyzed_input:
                     bins_data[idx]['vol'] += vol
                     
             all_intervals_disp = sorted(bins_data, key=lambda x: x['idx'], reverse=True)
-            
             top_5_above_disp = sorted(sorted([b for b in bins_data if b['mid'] >= current_price_round and b['vol'] > 0], key=lambda x: x['vol'], reverse=True)[:5], key=lambda x: x['start'], reverse=True)
             top_5_below_disp = sorted(sorted([b for b in bins_data if b['mid'] < current_price_round and b['vol'] > 0], key=lambda x: x['vol'], reverse=True)[:5], key=lambda x: x['start'], reverse=True)
 
@@ -238,64 +275,70 @@ if st.session_state.analyzed_input:
             # ==========================================
             st.success(f"✅ {target_name} ({yf_ticker}) 分析完成！最新股價: {current_price_round:.2f}")
             
-            # 防誤觸縮放開關
             allow_zoom = st.checkbox("🔍 啟用圖表縮放與拖曳功能 (防手機誤觸)", value=False)
             
-            # --- 【全新修改】：使用 st.container(border=True) 將整個 K線圖 區塊打包加上漂亮外框 ---
+            # --- 【重點修改】：4 層子圖表整合區 (K線、KD、MACD、法人買賣超) ---
             with st.container(border=True):
-                st.subheader("📈 64日技術K線與移動平均線")
+                st.subheader("📈 技術分析與籌碼指標綜合儀表板")
                 col_ma1, col_ma2, col_ma3 = st.columns(3)
-                show_ma5 = col_ma1.checkbox("顯示 5MA (咖啡色)", value=False)
-                show_ma10 = col_ma2.checkbox("顯示 10MA (亮藍綠)", value=True)
-                show_ma20 = col_ma3.checkbox("顯示 20MA (深藍色)", value=False)
+                show_ma5 = col_ma1.checkbox("顯示 5MA", value=False)
+                show_ma10 = col_ma2.checkbox("顯示 10MA", value=True)
+                show_ma20 = col_ma3.checkbox("顯示 20MA", value=False)
                 
                 date_strings = hist_64.index.strftime('%Y-%m-%d')
-                fig_k = go.Figure()
                 
-                # 實心純色的 K 線設計
-                fig_k.add_trace(go.Candlestick(
-                    x=date_strings,
-                    open=hist_64['Open'],
-                    high=hist_64['High'],
-                    low=hist_64['Low'],
-                    close=hist_64['Close'],
-                    name='K線',
-                    increasing_line_color='#FF4B4B',  
-                    increasing_fillcolor='#FF4B4B',   
-                    decreasing_line_color='#00B050',  
-                    decreasing_fillcolor='#00B050'    
-                ))
-                
-                if show_ma5:
-                    fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA5'], name='5MA', line=dict(color='#7A431D', width=1.5))) 
-                if show_ma10:
-                    fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA10'], name='10MA', line=dict(color='#00E5FF', width=1.5))) 
-                if show_ma20:
-                    fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA20'], name='20MA', line=dict(color='#0D47A1', width=1.5))) 
-                
-                # 設定 visible=False，完全省略 K線圖 的左邊與下面座標軸
-                fig_k.update_layout(
-                    xaxis=dict(
-                        type='category', 
-                        visible=False   
-                    ),
-                    yaxis=dict(
-                        visible=False   
-                    ),
-                    xaxis_rangeslider_visible=False,  
-                    margin=dict(l=4, r=4, t=15, b=4), # 微調內部邊距，配合外框視覺更緊湊
-                    height=420,
-                    hovermode='x unified',             
-                    legend=dict(orientation="h", y=1.05, x=0, yanchor="bottom") 
+                # 建立 4 列 1 欄的子圖表，設定共用 X 軸與各層高度比例
+                fig_k = make_subplots(
+                    rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                    row_heights=[0.45, 0.15, 0.20, 0.20],
+                    subplot_titles=("價格與均線", "KD (9,3,3)", "MACD (12,26,9)", "近 20 日法人買賣超(張)")
                 )
                 
-                # 套用縮放鎖定設定
+                # 【第 1 層】：K 線與均線
+                fig_k.add_trace(go.Candlestick(
+                    x=date_strings, open=hist_64['Open'], high=hist_64['High'], low=hist_64['Low'], close=hist_64['Close'],
+                    name='K線', increasing_line_color='#FF4B4B', increasing_fillcolor='#FF4B4B', decreasing_line_color='#00B050', decreasing_fillcolor='#00B050'
+                ), row=1, col=1)
+                
+                if show_ma5: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA5'], name='5MA', line=dict(color='#7A431D', width=1.5)), row=1, col=1)
+                if show_ma10: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA10'], name='10MA', line=dict(color='#00E5FF', width=1.5)), row=1, col=1)
+                if show_ma20: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA20'], name='20MA', line=dict(color='#0D47A1', width=1.5)), row=1, col=1)
+                
+                # 【第 2 層】：KD 指標
+                fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['K'], name='K值', line=dict(color='#FF9900', width=1.2)), row=2, col=1)
+                fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['D'], name='D值', line=dict(color='#0066FF', width=1.2)), row=2, col=1)
+                
+                # 【第 3 層】：MACD 指標
+                macd_colors = ['#FF4B4B' if val > 0 else '#00B050' for val in hist_64['OSC']]
+                fig_k.add_trace(go.Bar(x=date_strings, y=hist_64['OSC'], name='OSC', marker_color=macd_colors), row=3, col=1)
+                fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['DIF'], name='DIF', line=dict(color='#FF9900', width=1.2)), row=3, col=1)
+                fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MACD'], name='MACD', line=dict(color='#0066FF', width=1.2)), row=3, col=1)
+                
+                # 【第 4 層】：法人買賣超 (隱藏 64 天前面 44 天的資料，只顯示近 20 天)
+                inst_colors = ['#FF4B4B' if val > 0 else '#00B050' for val in hist_64['NetBuy']]
+                fig_k.add_trace(go.Bar(x=date_strings, y=hist_64['NetBuy'], name='法人買賣超', marker_color=inst_colors), row=4, col=1)
+                
+                # 更新排版設定，只保留最下方第四層的 X 軸
+                fig_k.update_layout(
+                    xaxis=dict(type='category', visible=False),  # 隱藏 R1 X軸
+                    xaxis2=dict(type='category', visible=False), # 隱藏 R2 X軸
+                    xaxis3=dict(type='category', visible=False), # 隱藏 R3 X軸
+                    xaxis4=dict(type='category', visible=True, title="交易日期", nticks=10), # 顯示 R4 X軸
+                    yaxis=dict(visible=False), yaxis2=dict(visible=True), yaxis3=dict(visible=True), yaxis4=dict(visible=True),
+                    xaxis_rangeslider_visible=False,
+                    margin=dict(l=4, r=4, t=30, b=4),
+                    height=800, # 拉高總圖表高度確保在手機上四層都清楚
+                    hovermode='x unified',
+                    showlegend=False
+                )
+                
+                # 套用縮放鎖定設定 (鎖定四層)
                 fig_k.update_xaxes(fixedrange=not allow_zoom)
                 fig_k.update_yaxes(fixedrange=not allow_zoom)
                 
                 st.plotly_chart(fig_k, use_container_width=True)
 
-            # --- 繪製實體分價量分佈圖 (維持不加外框) ---
+            # --- 繪製實體分價量分佈圖 ---
             st.subheader("📊 64日分價量參考圖")
             df_plot = pd.DataFrame({
                 '價格區間': [item['label'] for item in all_intervals_disp],
@@ -330,7 +373,6 @@ if st.session_state.analyzed_input:
                 for item in top_5_below_disp:
                     st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
 
-
             # 判斷指標趨勢
             ma_trend = "✅ 多頭" if latest['MA5'] > latest['MA10'] > latest['MA20'] else ("⚠️ 空頭" if latest['MA5'] < latest['MA10'] < latest['MA20'] else "⭕ 未形成趨勢")
             kd_trend = "✅ 多" if latest['K'] > latest['D'] else "⚠️ 空"
@@ -348,52 +390,21 @@ if st.session_state.analyzed_input:
             })
             st.table(indicator_data)
 
-            
             # ==========================================
-            # 6. 法人買賣強度
+            # 6. 法人買賣強度 (改由剛才抓好的 20 日資料計算近 5 日強度)
             # ==========================================
             st.subheader("📈 近 5 日法人買賣強度")
             if yf_ticker.endswith('.TWO'):
                 st.info("⚠️ 該股為上櫃股票，證交所 API 僅支援上市股票之法人籌碼查詢。")
                 df_chip = pd.DataFrame()
             else:
-                last_9_dates = hist_64.index[-9:]
-                daily_records = []
-                for d in last_9_dates:
-                    month_str, date_str = d.strftime('%Y%m01'), d.strftime('%Y%m%d')
-                    tw_date_str = f"{d.year - 1911}/{d.strftime('%m/%d')}"
-                    
-                    daily_vol, net_buy = 0, 0
-                    
-                    try:
-                        res_vol = requests.get(f"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?date={month_str}&stockNo={raw_ticker}", timeout=3).json()
-                        if res_vol.get('stat') == 'OK':
-                            df_vol = pd.DataFrame(res_vol['data'], columns=res_vol['fields'])
-                            vol_val = dict(zip(df_vol['日期'], df_vol['成交股數'])).get(tw_date_str, "0")
-                            daily_vol_shares = int(vol_val.replace(',', '')) if isinstance(vol_val, str) else int(vol_val)
-                            daily_vol = round(daily_vol_shares / 1000)
-                    except: pass
-                    
-                    try:
-                        res_t86 = requests.get(f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_str}&selectType=ALL", timeout=3).json()
-                        if res_t86.get('stat') == 'OK':
-                            df_t86 = pd.DataFrame(res_t86['data'], columns=res_t86['fields'])
-                            target_row = df_t86[df_t86['證券代號'] == raw_ticker]
-                            if not target_row.empty:
-                                buy_col = '三大法人買賣超股數' if '三大法人買賣超股數' in df_t86.columns else df_t86.columns[-1]
-                                net_buy_shares = int(target_row[buy_col].values[0].replace(',', ''))
-                                net_buy = round(net_buy_shares / 1000)
-                    except: pass
-                    
-                    if daily_vol == 0: 
-                        daily_vol = int(hist_64.loc[d, 'Volume']) 
-                        
-                    daily_records.append({'date_disp': d.strftime('%Y-%m-%d'), 'net_buy': net_buy, 'volume': daily_vol})
-
                 chip_results = []
-                for i in range(4, 9):
+                # 利用已經抓回來的 daily_records 取出最後 5 天來計算滾動強度
+                # daily_records 的長度是 20，最後 5 筆的 Index 是 15~19
+                for i in range(15, 20):
                     window = daily_records[i-4 : i+1] 
-                    t_net_buy, t_vol = sum(w['net_buy'] for w in window), sum(w['volume'] for w in window)
+                    t_net_buy = sum(w['net_buy'] for w in window)
+                    t_vol = sum(w['volume'] for w in window)
                     ratio = (t_net_buy / t_vol * 100) if t_vol > 0 else 0
                     chip_results.append({
                         '結算日期': daily_records[i]['date_disp'],
