@@ -148,7 +148,6 @@ if st.session_state.analyzed_input:
             
             hist_64 = hist.tail(64).copy()
             hist_64['Volume'] = hist_64['Volume'] / 1000  
-            latest = hist_64.iloc[-1]
             
             # --- 抓取整月融資券 (規劃A) ---
             margin_map = {}
@@ -159,6 +158,9 @@ if st.session_state.analyzed_input:
             
             hist_64['Margin'] = [margin_map.get(d.strftime('%Y%m%d'), {}).get('Margin', 0) for d in hist_64.index]
             hist_64['Short'] = [margin_map.get(d.strftime('%Y%m%d'), {}).get('Short', 0) for d in hist_64.index]
+
+            # 【重點修正】: 在融資券資料都加入 hist_64 之後，才拍下最新一天的快照！
+            latest = hist_64.iloc[-1]
 
             # --- 籌碼區間與分價量計算 ---
             current_price_round = round(latest['Close'], 2)
