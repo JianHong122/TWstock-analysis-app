@@ -23,7 +23,7 @@ if 'analyzed_input' not in st.session_state:
 # ==========================================
 st.set_page_config(page_title="台股籌碼分析工具", page_icon="📈", layout="centered")
 st.title("📊 台股籌碼與技術指標綜合分析")
-st.markdown("支援 **技術K線均線**、**KD/MACD**、**融資券追蹤**、**分價量防守** 與 **五日法人買賣強度**")
+st.markdown("支援 **技術K線均線**、**KD/MACD**、**分價量防守** 與 **五日法人買賣強度**")
 
 # ==========================================
 # 2. 爬蟲與資料快取函數
@@ -57,26 +57,6 @@ def fetch_stock_history(ticker):
         return stock_data.history(period="6mo")
     except Exception:
         return pd.DataFrame()
-
-@st.cache_data(ttl=300, show_spinner=False)
-def get_margin_data(date_str, ticker):
-    """抓取整月融資券資料"""
-    try:
-        url = f"https://www.twse.com.tw/rwd/zh/marginTrading/CREDIT_ALI?date={date_str}&stockNo={ticker}"
-        res = requests.get(url, timeout=3).json()
-        data = {}
-        if res.get('stat') == 'OK':
-            for row in res['data']:
-                # row[0] 是日期(113/05/15), row[5] 是融資餘額, row[11] 是融券餘額
-                tw_date = row[0].split('/')
-                ad_date = f"{int(tw_date[0])+1911}{tw_date[1]}{tw_date[2]}"
-                data[ad_date] = {
-                    'Margin': int(str(row[5]).replace(',', '')), 
-                    'Short': int(str(row[11]).replace(',', ''))
-                }
-        return data
-    except Exception: 
-        return {}
 
 # ==========================================
 # 3. 網頁 UI：使用者輸入區
@@ -148,20 +128,8 @@ if st.session_state.analyzed_input:
             
             hist_64 = hist.tail(64).copy()
             hist_64['Volume'] = hist_64['Volume'] / 1000  
-            
-            # --- 抓取整月融資券 (規劃A) ---
-            margin_map = {}
-            if not yf_ticker.endswith('.TWO'): # 上市才抓信用交易
-                unique_months = list(set([d.strftime('%Y%m01') for d in hist_64.index]))
-                for m in unique_months:
-                    margin_map.update(get_margin_data(m, raw_ticker))
-            
-            hist_64['Margin'] = [margin_map.get(d.strftime('%Y%m%d'), {}).get('Margin', 0) for d in hist_64.index]
-            hist_64['Short'] = [margin_map.get(d.strftime('%Y%m%d'), {}).get('Short', 0) for d in hist_64.index]
-
-            # 【重點修正】: 在融資券資料都加入 hist_64 之後，才拍下最新一天的快照！
             latest = hist_64.iloc[-1]
-
+            
             # --- 籌碼區間與分價量計算 ---
             current_price_round = round(latest['Close'], 2)
             max_price, min_price = hist_64['High'].max(), hist_64['Low'].min()
@@ -199,7 +167,7 @@ if st.session_state.analyzed_input:
             top_5_above_disp = sorted(sorted([b for b in bins_data if b['mid'] >= current_price_round and b['vol'] > 0], key=lambda x: x['vol'], reverse=True)[:5], key=lambda x: x['start'], reverse=True)
             top_5_below_disp = sorted(sorted([b for b in bins_data if b['mid'] < current_price_round and b['vol'] > 0], key=lambda x: x['vol'], reverse=True)[:5], key=lambda x: x['start'], reverse=True)
 
-            # --- 抓取法人買賣超 (精簡版 9 天迴圈) ---
+            # --- 抓取法人買賣超 (精簡版 9 天迴圈，計算 5 日強度用) ---
             last_9_dates = hist_64.index[-9:]
             daily_records = []
             
@@ -249,15 +217,17 @@ if st.session_state.analyzed_input:
     
     st.subheader("📊 技術指標參考")
     st.table(pd.DataFrame({
-        "項目": ["均線狀況", "KD狀況", "MACD狀況", "今日融資餘額", "今日融券餘額"],
-        "狀態": [ma_trend, kd_trend, macd_trend, f"{latest['Margin']:,}", f"{latest['Short']:,}"],
-        "數值細項": [f"5MA:{latest['MA5']:.1f} / 10MA:{latest['MA10']:.1f}", f"K:{latest['K']:.1f} / D:{latest['D']:.1f}", f"DIF:{latest['DIF']:.1f} / MACD:{latest['MACD']:.1f}", "張", "張"]
+        "項目": ["均線狀況", "KD狀況", "MACD狀況"],
+        "狀態": [ma_trend, kd_trend, macd_trend],
+        "數值細項": [f"5MA:{latest['MA5']:.1f} / 10MA:{latest['MA10']:.1f} / 20MA:{latest['MA20']:.1f}", 
+                     f"K:{latest['K']:.1f} / D:{latest['D']:.1f}", 
+                     f"DIF:{latest['DIF']:.1f} / MACD:{latest['MACD']:.1f}"]
     }))
 
-    # --- 2. 綜合四層圖表 ---
+    # --- 2. 綜合三層圖表 (移除融資券版本) ---
     allow_zoom = st.checkbox("🔍 啟用圖表縮放與拖曳功能 (防手機誤觸)", value=False)
     with st.container(border=True):
-        st.subheader("📈 技術分析與籌碼指標綜合儀表板")
+        st.subheader("📈 技術分析綜合儀表板")
         col_ma1, col_ma2, col_ma3 = st.columns(3)
         show_ma5 = col_ma1.checkbox("顯示 5MA", value=False)
         show_ma10 = col_ma2.checkbox("顯示 10MA", value=True)
@@ -265,9 +235,9 @@ if st.session_state.analyzed_input:
         
         date_strings = hist_64.index.strftime('%Y-%m-%d')
         fig_k = make_subplots(
-            rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03,
-            row_heights=[0.45, 0.15, 0.20, 0.20],
-            subplot_titles=("價格與均線", "KD (9,3,3)", "MACD (12,26,9)", "融資餘額(紫) / 融券餘額(綠)")
+            rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+            row_heights=[0.5, 0.25, 0.25],
+            subplot_titles=("價格與均線", "KD (9,3,3)", "MACD (12,26,9)")
         )
         
         # R1: K線
@@ -286,14 +256,10 @@ if st.session_state.analyzed_input:
         fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['DIF'], name='DIF', line=dict(color='#FF9900', width=1.2)), row=3, col=1)
         fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MACD'], name='MACD', line=dict(color='#0066FF', width=1.2)), row=3, col=1)
         
-        # R4: 融資券餘額 (面積圖與折線圖)
-        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['Margin'], name='融資餘額', line=dict(color='#8B5CF6', width=2), fill='tozeroy', fillcolor='rgba(139, 92, 246, 0.2)'), row=4, col=1)
-        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['Short'], name='融券餘額', line=dict(color='#059669', width=2)), row=4, col=1)
-        
         fig_k.update_layout(
-            xaxis=dict(type='category', visible=False), xaxis2=dict(type='category', visible=False), xaxis3=dict(type='category', visible=False), xaxis4=dict(type='category', visible=True, title="交易日期", nticks=10),
-            yaxis=dict(visible=False), yaxis2=dict(visible=True), yaxis3=dict(visible=True), yaxis4=dict(visible=True),
-            xaxis_rangeslider_visible=False, margin=dict(l=4, r=4, t=30, b=4), height=800, hovermode='x unified', showlegend=False
+            xaxis=dict(type='category', visible=False), xaxis2=dict(type='category', visible=False), xaxis3=dict(type='category', visible=True, title="交易日期", nticks=10),
+            yaxis=dict(visible=False), yaxis2=dict(visible=True), yaxis3=dict(visible=True),
+            xaxis_rangeslider_visible=False, margin=dict(l=4, r=4, t=30, b=4), height=700, hovermode='x unified', showlegend=False
         )
         fig_k.update_xaxes(fixedrange=not allow_zoom)
         fig_k.update_yaxes(fixedrange=not allow_zoom)
