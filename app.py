@@ -19,14 +19,14 @@ if 'analyzed_input' not in st.session_state:
     st.session_state.analyzed_input = None
 
 # ==========================================
-# 1. 網頁基本設定 (支援手機版 RWD)
+# 1. 網頁基本設定 
 # ==========================================
 st.set_page_config(page_title="台股籌碼分析工具", page_icon="📈", layout="centered")
-st.title("📊 台股區間支撐壓力與法人籌碼分析")
-st.markdown("支援 **技術K線均線**、**20級距全覽**、**Top 5 關鍵防守** 與 **五日法人買賣強度**")
+st.title("📊 台股籌碼與技術指標綜合分析")
+st.markdown("支援 **技術K線均線**、**KD/MACD**、**融資券追蹤**、**分價量防守** 與 **五日法人買賣強度**")
 
 # ==========================================
-# 2. 讀取股票清單與抓取股價 (加入 Cache 防止被 Yahoo 封鎖)
+# 2. 爬蟲與資料快取函數
 # ==========================================
 @st.cache_data
 def load_stock_list():
@@ -34,14 +34,12 @@ def load_stock_list():
     name_to_ticker = {}
     try:
         df_excel = pd.read_excel(file_path, engine='openpyxl', dtype=str)
-        col_ticker = df_excel.columns[0]
-        col_name = df_excel.columns[1]
+        col_ticker, col_name = df_excel.columns[0], df_excel.columns[1]
         for _, row in df_excel.iterrows():
             if pd.notna(row[col_name]) and pd.notna(row[col_ticker]):
                 name = str(row[col_name]).strip()
                 ticker = str(row[col_ticker]).strip()
-                if ticker.endswith('.0'):
-                    ticker = ticker[:-2]
+                if ticker.endswith('.0'): ticker = ticker[:-2]
                 name_to_ticker[name] = ticker
         return name_to_ticker, True
     except Exception:
@@ -56,10 +54,29 @@ if not list_loaded:
 def fetch_stock_history(ticker):
     try:
         stock_data = yf.Ticker(ticker)
-        hist = stock_data.history(period="6mo")
-        return hist
+        return stock_data.history(period="6mo")
     except Exception:
         return pd.DataFrame()
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_margin_data(date_str, ticker):
+    """抓取整月融資券資料"""
+    try:
+        url = f"https://www.twse.com.tw/rwd/zh/marginTrading/CREDIT_ALI?date={date_str}&stockNo={ticker}"
+        res = requests.get(url, timeout=3).json()
+        data = {}
+        if res.get('stat') == 'OK':
+            for row in res['data']:
+                # row[0] 是日期(113/05/15), row[5] 是融資餘額, row[11] 是融券餘額
+                tw_date = row[0].split('/')
+                ad_date = f"{int(tw_date[0])+1911}{tw_date[1]}{tw_date[2]}"
+                data[ad_date] = {
+                    'Margin': int(str(row[5]).replace(',', '')), 
+                    'Short': int(str(row[11]).replace(',', ''))
+                }
+        return data
+    except Exception: 
+        return {}
 
 # ==========================================
 # 3. 網頁 UI：使用者輸入區
@@ -70,14 +87,12 @@ analyze_button = st.button("🚀 開始分析", use_container_width=True)
 if analyze_button and user_input:
     st.session_state.analyzed_input = user_input
 
-# 只要記憶體中有值，就顯示分析結果
 if st.session_state.analyzed_input:
     current_target_input = st.session_state.analyzed_input
     
-    # ==========================================
-    # 階段 1：極速運算區 (不包含法人資料抓取)
-    # ==========================================
-    with st.spinner('正在極速運算技術指標與分價量籌碼，請稍候...'):
+    with st.spinner('📡 正在向證交所與雲端伺服器抓取大數據，請稍候...'):
+        
+        # --- 解析股票代號 ---
         target_name, yf_ticker, raw_ticker, auto_fallback = "", "", "", True
         matched_names = [name for name in name_to_ticker.keys() if current_target_input in name] if list_loaded else []
         
@@ -98,6 +113,7 @@ if st.session_state.analyzed_input:
             raw_ticker = name_to_ticker[target_name]
             yf_ticker = f"{raw_ticker}.TW"
 
+        # --- 抓取股價與計算技術指標 ---
         try:
             hist = fetch_stock_history(yf_ticker)
             if hist.empty and auto_fallback and raw_ticker:
@@ -111,31 +127,41 @@ if st.session_state.analyzed_input:
                 st.error("❌ 無法取得歷史資料。可能是股票下市、代號錯誤，或 Yahoo API 暫時阻擋，請 5 分鐘後再試。")
                 st.stop()
             
-            # --- 技術指標計算 ---
+            # MA 均線
             hist['MA5'] = hist['Close'].rolling(window=5).mean()
             hist['MA10'] = hist['Close'].rolling(window=10).mean()
             hist['MA20'] = hist['Close'].rolling(window=20).mean()
 
+            # KD 指標
             low_min = hist['Low'].rolling(window=9).min()
             high_max = hist['High'].rolling(window=9).max()
             rsv = (hist['Close'] - low_min) / (high_max - low_min + 1e-9) * 100
             hist['K'] = rsv.ewm(com=2, adjust=False).mean()
             hist['D'] = hist['K'].ewm(com=2, adjust=False).mean()
             
+            # MACD 指標
             ema12 = hist['Close'].ewm(span=12, adjust=False).mean()
             ema26 = hist['Close'].ewm(span=26, adjust=False).mean()
             hist['DIF'] = ema12 - ema26
             hist['MACD'] = hist['DIF'].ewm(span=9, adjust=False).mean()
             hist['OSC'] = (hist['DIF'] - hist['MACD']) * 2 
             
-            latest = hist.iloc[-1]
             hist_64 = hist.tail(64).copy()
             hist_64['Volume'] = hist_64['Volume'] / 1000  
-            hist_64['NetBuy'] = 0.0 # 預留欄位給稍後的法人抓取
+            latest = hist_64.iloc[-1]
             
+            # --- 抓取整月融資券 (規劃A) ---
+            margin_map = {}
+            if not yf_ticker.endswith('.TWO'): # 上市才抓信用交易
+                unique_months = list(set([d.strftime('%Y%m01') for d in hist_64.index]))
+                for m in unique_months:
+                    margin_map.update(get_margin_data(m, raw_ticker))
+            
+            hist_64['Margin'] = [margin_map.get(d.strftime('%Y%m%d'), {}).get('Margin', 0) for d in hist_64.index]
+            hist_64['Short'] = [margin_map.get(d.strftime('%Y%m%d'), {}).get('Short', 0) for d in hist_64.index]
+
             # --- 籌碼區間與分價量計算 ---
-            current_price = hist_64['Close'].dropna().iloc[-1]
-            current_price_round = round(current_price, 2)
+            current_price_round = round(latest['Close'], 2)
             max_price, min_price = hist_64['High'].max(), hist_64['Low'].min()
             if max_price == min_price:
                 max_price, min_price = min_price * 1.05, min_price * 0.95
@@ -171,30 +197,62 @@ if st.session_state.analyzed_input:
             top_5_above_disp = sorted(sorted([b for b in bins_data if b['mid'] >= current_price_round and b['vol'] > 0], key=lambda x: x['vol'], reverse=True)[:5], key=lambda x: x['start'], reverse=True)
             top_5_below_disp = sorted(sorted([b for b in bins_data if b['mid'] < current_price_round and b['vol'] > 0], key=lambda x: x['vol'], reverse=True)[:5], key=lambda x: x['start'], reverse=True)
 
+            # --- 抓取法人買賣超 (精簡版 9 天迴圈) ---
+            last_9_dates = hist_64.index[-9:]
+            daily_records = []
+            
+            if not yf_ticker.endswith('.TWO'):
+                for d in last_9_dates:
+                    month_str, date_str = d.strftime('%Y%m01'), d.strftime('%Y%m%d')
+                    tw_date_str = f"{d.year - 1911}/{d.strftime('%m/%d')}"
+                    daily_vol, net_buy = 0, 0
+                    
+                    try:
+                        res_vol = requests.get(f"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?date={month_str}&stockNo={raw_ticker}", timeout=2).json()
+                        if res_vol.get('stat') == 'OK':
+                            df_vol = pd.DataFrame(res_vol['data'], columns=res_vol['fields'])
+                            vol_val = dict(zip(df_vol['日期'], df_vol['成交股數'])).get(tw_date_str, "0")
+                            daily_vol = round((int(vol_val.replace(',', '')) if isinstance(vol_val, str) else int(vol_val)) / 1000)
+                    except: pass
+                    
+                    try:
+                        res_t86 = requests.get(f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_str}&selectType=ALL", timeout=2).json()
+                        if res_t86.get('stat') == 'OK':
+                            df_t86 = pd.DataFrame(res_t86['data'], columns=res_t86['fields'])
+                            target_row = df_t86[df_t86['證券代號'] == raw_ticker]
+                            if not target_row.empty:
+                                buy_col = '三大法人買賣超股數' if '三大法人買賣超股數' in df_t86.columns else df_t86.columns[-1]
+                                net_buy = round(int(target_row[buy_col].values[0].replace(',', '')) / 1000)
+                    except: pass
+                    
+                    if daily_vol == 0: daily_vol = int(hist_64.loc[d, 'Volume']) 
+                    daily_records.append({'date_disp': d.strftime('%Y-%m-%d'), 'net_buy': net_buy, 'volume': daily_vol})
+            else:
+                for d in last_9_dates:
+                    daily_records.append({'date_disp': d.strftime('%Y-%m-%d'), 'net_buy': 0, 'volume': int(hist_64.loc[d, 'Volume'])})
+
         except Exception as e:
             st.error(f"❌ 發生錯誤：{e}")
             st.stop()
 
-
     # ==========================================
-    # 階段 2：渲染第一波快速畫面 (無須等待爬蟲)
+    # 4. 網頁 UI：呈現結果
     # ==========================================
-    st.success(f"✅ {target_name} ({yf_ticker}) 價格與技術指標計算完成！最新股價: {current_price_round:.2f}")
+    st.success(f"✅ {target_name} ({yf_ticker}) 分析完成！最新股價: {current_price_round:.2f}")
 
-    # 1. 顯示技術指標表
-    ma_trend = "✅ 多頭" if latest['MA5'] > latest['MA10'] > latest['MA20'] else ("⚠️ 空頭" if latest['MA5'] < latest['MA10'] < latest['MA20'] else "⭕ 未形成趨勢")
+    # --- 1. 技術指標總表 ---
+    ma_trend = "✅ 多頭" if latest['MA5'] > latest['MA10'] > latest['MA20'] else ("⚠️ 空頭" if latest['MA5'] < latest['MA10'] < latest['MA20'] else "⭕ 盤整")
     kd_trend = "✅ 多" if latest['K'] > latest['D'] else "⚠️ 空"
     macd_trend = "✅ 多" if latest['DIF'] > latest['MACD'] else "⚠️ 空"
     
     st.subheader("📊 技術指標參考")
-    indicator_data = pd.DataFrame({
-        "項目": ["均線狀況", "KD狀況", "MACD狀況"],
-        "趨勢": [ma_trend, kd_trend, macd_trend],
-        "數值細項": [f"5MA:{latest['MA5']:.1f} / 10MA:{latest['MA10']:.1f} / 20MA:{latest['MA20']:.1f}", f"K:{latest['K']:.2f} / D:{latest['D']:.2f}", f"DIF:{latest['DIF']:.2f} / MACD:{latest['MACD']:.2f}"]
-    })
-    st.table(indicator_data)
+    st.table(pd.DataFrame({
+        "項目": ["均線狀況", "KD狀況", "MACD狀況", "今日融資餘額", "今日融券餘額"],
+        "狀態": [ma_trend, kd_trend, macd_trend, f"{latest['Margin']:,}", f"{latest['Short']:,}"],
+        "數值細項": [f"5MA:{latest['MA5']:.1f} / 10MA:{latest['MA10']:.1f}", f"K:{latest['K']:.1f} / D:{latest['D']:.1f}", f"DIF:{latest['DIF']:.1f} / MACD:{latest['MACD']:.1f}", "張", "張"]
+    }))
 
-    # 2. 建立綜合圖表的 Placeholder (佔位符)
+    # --- 2. 綜合四層圖表 ---
     allow_zoom = st.checkbox("🔍 啟用圖表縮放與拖曳功能 (防手機誤觸)", value=False)
     with st.container(border=True):
         st.subheader("📈 技術分析與籌碼指標綜合儀表板")
@@ -203,11 +261,43 @@ if st.session_state.analyzed_input:
         show_ma10 = col_ma2.checkbox("顯示 10MA", value=True)
         show_ma20 = col_ma3.checkbox("顯示 20MA", value=False)
         
-        # 使用 st.empty() 預留畫圖的位置
-        main_chart_placeholder = st.empty()
-        main_chart_placeholder.info("⏳ 正在背景抓取近 20 日法人數據，圖表即將顯示...")
+        date_strings = hist_64.index.strftime('%Y-%m-%d')
+        fig_k = make_subplots(
+            rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+            row_heights=[0.45, 0.15, 0.20, 0.20],
+            subplot_titles=("價格與均線", "KD (9,3,3)", "MACD (12,26,9)", "融資餘額(紫) / 融券餘額(綠)")
+        )
+        
+        # R1: K線
+        fig_k.add_trace(go.Candlestick(x=date_strings, open=hist_64['Open'], high=hist_64['High'], low=hist_64['Low'], close=hist_64['Close'], name='K線', increasing_line_color='#FF4B4B', increasing_fillcolor='#FF4B4B', decreasing_line_color='#00B050', decreasing_fillcolor='#00B050'), row=1, col=1)
+        if show_ma5: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA5'], name='5MA', line=dict(color='#7A431D', width=1.5)), row=1, col=1)
+        if show_ma10: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA10'], name='10MA', line=dict(color='#00E5FF', width=1.5)), row=1, col=1)
+        if show_ma20: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA20'], name='20MA', line=dict(color='#0D47A1', width=1.5)), row=1, col=1)
+        
+        # R2: KD
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['K'], name='K值', line=dict(color='#FF9900', width=1.2)), row=2, col=1)
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['D'], name='D值', line=dict(color='#0066FF', width=1.2)), row=2, col=1)
+        
+        # R3: MACD
+        macd_colors = ['#FF4B4B' if val > 0 else '#00B050' for val in hist_64['OSC']]
+        fig_k.add_trace(go.Bar(x=date_strings, y=hist_64['OSC'], name='OSC', marker_color=macd_colors), row=3, col=1)
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['DIF'], name='DIF', line=dict(color='#FF9900', width=1.2)), row=3, col=1)
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MACD'], name='MACD', line=dict(color='#0066FF', width=1.2)), row=3, col=1)
+        
+        # R4: 融資券餘額 (面積圖與折線圖)
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['Margin'], name='融資餘額', line=dict(color='#8B5CF6', width=2), fill='tozeroy', fillcolor='rgba(139, 92, 246, 0.2)'), row=4, col=1)
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['Short'], name='融券餘額', line=dict(color='#059669', width=2)), row=4, col=1)
+        
+        fig_k.update_layout(
+            xaxis=dict(type='category', visible=False), xaxis2=dict(type='category', visible=False), xaxis3=dict(type='category', visible=False), xaxis4=dict(type='category', visible=True, title="交易日期", nticks=10),
+            yaxis=dict(visible=False), yaxis2=dict(visible=True), yaxis3=dict(visible=True), yaxis4=dict(visible=True),
+            xaxis_rangeslider_visible=False, margin=dict(l=4, r=4, t=30, b=4), height=800, hovermode='x unified', showlegend=False
+        )
+        fig_k.update_xaxes(fixedrange=not allow_zoom)
+        fig_k.update_yaxes(fixedrange=not allow_zoom)
+        st.plotly_chart(fig_k, use_container_width=True)
 
-    # 3. 顯示分價量長條圖
+    # --- 3. 64 日分價量圖 ---
     st.subheader("📊 64日分價量參考圖")
     df_plot = pd.DataFrame({
         '價格區間': [item['label'] for item in all_intervals_disp],
@@ -221,7 +311,6 @@ if st.session_state.analyzed_input:
     fig.update_yaxes(fixedrange=not allow_zoom)
     st.plotly_chart(fig, use_container_width=True)
 
-    # 4. 顯示關鍵支撐壓力
     st.subheader("🎯 關鍵支撐與壓力 (Top 5)")
     col1, col2 = st.columns(2)
     with col1:
@@ -231,59 +320,14 @@ if st.session_state.analyzed_input:
         st.write("**⬇️ 向下方支撐區**")
         for item in top_5_below_disp: st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
 
-
-    # ==========================================
-    # 階段 3：開始抓取法人資料 (耗時步驟)
-    # ==========================================
+    # --- 4. 近 5 日法人買賣強度 ---
     st.subheader("📈 近 5 日法人買賣強度")
-    last_20_dates = hist_64.index[-20:]
-    daily_records = []
-    df_chip = pd.DataFrame()
-
     if yf_ticker.endswith('.TWO'):
-        st.info("⚠️ 該股為上櫃股票，證交所 API 僅支援上市股票之法人籌碼查詢。")
-        for d in last_20_dates:
-            daily_records.append({'date_disp': d.strftime('%Y-%m-%d'), 'net_buy': 0, 'volume': int(hist_64.loc[d, 'Volume'])})
+        st.info("⚠️ 該股為上櫃股票，目前僅支援上市股票之籌碼查詢。")
+        df_chip = pd.DataFrame()
     else:
-        # 開始跑進度條並抓取資料
-        progress_bar = st.progress(0, text="📡 正在向證交所 API 抓取近 20 日法人買賣超數據...")
-        for idx, d in enumerate(last_20_dates):
-            month_str, date_str = d.strftime('%Y%m01'), d.strftime('%Y%m%d')
-            tw_date_str = f"{d.year - 1911}/{d.strftime('%m/%d')}"
-            daily_vol, net_buy = 0, 0
-            
-            try:
-                res_vol = requests.get(f"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?date={month_str}&stockNo={raw_ticker}", timeout=3).json()
-                if res_vol.get('stat') == 'OK':
-                    df_vol = pd.DataFrame(res_vol['data'], columns=res_vol['fields'])
-                    vol_val = dict(zip(df_vol['日期'], df_vol['成交股數'])).get(tw_date_str, "0")
-                    daily_vol_shares = int(vol_val.replace(',', '')) if isinstance(vol_val, str) else int(vol_val)
-                    daily_vol = round(daily_vol_shares / 1000)
-            except: pass
-            
-            try:
-                res_t86 = requests.get(f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_str}&selectType=ALL", timeout=3).json()
-                if res_t86.get('stat') == 'OK':
-                    df_t86 = pd.DataFrame(res_t86['data'], columns=res_t86['fields'])
-                    target_row = df_t86[df_t86['證券代號'] == raw_ticker]
-                    if not target_row.empty:
-                        buy_col = '三大法人買賣超股數' if '三大法人買賣超股數' in df_t86.columns else df_t86.columns[-1]
-                        net_buy_shares = int(target_row[buy_col].values[0].replace(',', ''))
-                        net_buy = round(net_buy_shares / 1000)
-            except: pass
-            
-            if daily_vol == 0: daily_vol = int(hist_64.loc[d, 'Volume']) 
-                
-            daily_records.append({'date_disp': d.strftime('%Y-%m-%d'), 'net_buy': net_buy, 'volume': daily_vol})
-            hist_64.loc[d, 'NetBuy'] = net_buy # 將抓到的法人買賣存入 dataframe 供畫圖使用
-            
-            progress_bar.progress((idx + 1) / 20, text=f"📡 正在向證交所 API 抓取近 20 日法人買賣超數據 ({idx+1}/20)...")
-        
-        progress_bar.empty() # 抓取完畢，清除進度條
-        
-        # 計算近 5 日強度表
         chip_results = []
-        for i in range(15, 20):
+        for i in range(4, 9):
             window = daily_records[i-4 : i+1] 
             t_net_buy = sum(w['net_buy'] for w in window)
             t_vol = sum(w['volume'] for w in window)
@@ -298,46 +342,7 @@ if st.session_state.analyzed_input:
         df_chip = pd.DataFrame(list(reversed(chip_results)))
         st.dataframe(df_chip, use_container_width=True)
 
-    # ==========================================
-    # 階段 4：資料到齊，畫出綜合子圖表並填補空位
-    # ==========================================
-    date_strings = hist_64.index.strftime('%Y-%m-%d')
-    fig_k = make_subplots(
-        rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03,
-        row_heights=[0.45, 0.15, 0.20, 0.20],
-        subplot_titles=("價格與均線", "KD (9,3,3)", "MACD (12,26,9)", "近 20 日法人買賣超(張)")
-    )
-    
-    fig_k.add_trace(go.Candlestick(x=date_strings, open=hist_64['Open'], high=hist_64['High'], low=hist_64['Low'], close=hist_64['Close'], name='K線', increasing_line_color='#FF4B4B', increasing_fillcolor='#FF4B4B', decreasing_line_color='#00B050', decreasing_fillcolor='#00B050'), row=1, col=1)
-    if show_ma5: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA5'], name='5MA', line=dict(color='#7A431D', width=1.5)), row=1, col=1)
-    if show_ma10: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA10'], name='10MA', line=dict(color='#00E5FF', width=1.5)), row=1, col=1)
-    if show_ma20: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA20'], name='20MA', line=dict(color='#0D47A1', width=1.5)), row=1, col=1)
-    
-    fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['K'], name='K值', line=dict(color='#FF9900', width=1.2)), row=2, col=1)
-    fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['D'], name='D值', line=dict(color='#0066FF', width=1.2)), row=2, col=1)
-    
-    macd_colors = ['#FF4B4B' if val > 0 else '#00B050' for val in hist_64['OSC']]
-    fig_k.add_trace(go.Bar(x=date_strings, y=hist_64['OSC'], name='OSC', marker_color=macd_colors), row=3, col=1)
-    fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['DIF'], name='DIF', line=dict(color='#FF9900', width=1.2)), row=3, col=1)
-    fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MACD'], name='MACD', line=dict(color='#0066FF', width=1.2)), row=3, col=1)
-    
-    inst_colors = ['#FF4B4B' if val > 0 else '#00B050' for val in hist_64['NetBuy']]
-    fig_k.add_trace(go.Bar(x=date_strings, y=hist_64['NetBuy'], name='法人買賣超', marker_color=inst_colors), row=4, col=1)
-    
-    fig_k.update_layout(
-        xaxis=dict(type='category', visible=False), xaxis2=dict(type='category', visible=False), xaxis3=dict(type='category', visible=False), xaxis4=dict(type='category', visible=True, title="交易日期", nticks=10),
-        yaxis=dict(visible=False), yaxis2=dict(visible=True), yaxis3=dict(visible=True), yaxis4=dict(visible=True),
-        xaxis_rangeslider_visible=False, margin=dict(l=4, r=4, t=30, b=4), height=800, hovermode='x unified', showlegend=False
-    )
-    fig_k.update_xaxes(fixedrange=not allow_zoom)
-    fig_k.update_yaxes(fixedrange=not allow_zoom)
-    
-    # 【關鍵】將準備好的圖表，填入剛剛佔位的 Placeholder 中
-    main_chart_placeholder.plotly_chart(fig_k, use_container_width=True)
-
-    # ==========================================
-    # 7. Excel 記憶體內產生與下載按鈕
-    # ==========================================
+    # --- 5. Excel 匯出 ---
     st.divider()
     st.subheader("💾 匯出完整 Excel 報表")
     
@@ -384,6 +389,5 @@ if st.session_state.analyzed_input:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary"
         )
-
     except Exception as e:
         st.error(f"❌ Excel 產生發生錯誤：{e}")
