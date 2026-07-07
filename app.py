@@ -70,30 +70,31 @@ if analyze_button and user_input:
 if st.session_state.analyzed_input:
     current_target_input = st.session_state.analyzed_input
     
-    with st.spinner('📡 正在向證交所與雲端伺服器抓取大數據，請稍候...'):
-        
-        # --- 解析股票代號 ---
-        target_name, yf_ticker, raw_ticker, auto_fallback = "", "", "", True
-        matched_names = [name for name in name_to_ticker.keys() if current_target_input in name] if list_loaded else []
-        
-        if len(matched_names) == 0:
-            target_name = f"自訂代號 ({current_target_input})"
-            if current_target_input.lower().endswith('.tw') or current_target_input.lower().endswith('.two'):
-                yf_ticker = current_target_input.upper()
-                auto_fallback = False 
-                raw_ticker = current_target_input.split('.')[0]
-            else:
-                raw_ticker = current_target_input
-                yf_ticker = f"{raw_ticker}.TW"
-        elif len(matched_names) > 1:
-            st.error(f"⚠️ 找到多檔包含 '{current_target_input}' 的股票，請輸入更明確的名稱：{', '.join(matched_names)}")
-            st.stop()
+    # 解析股票代號
+    target_name, yf_ticker, raw_ticker, auto_fallback = "", "", "", True
+    matched_names = [name for name in name_to_ticker.keys() if current_target_input in name] if list_loaded else []
+    
+    if len(matched_names) == 0:
+        target_name = f"自訂代號 ({current_target_input})"
+        if current_target_input.lower().endswith('.tw') or current_target_input.lower().endswith('.two'):
+            yf_ticker = current_target_input.upper()
+            auto_fallback = False 
+            raw_ticker = current_target_input.split('.')[0]
         else:
-            target_name = matched_names[0]
-            raw_ticker = name_to_ticker[target_name]
+            raw_ticker = current_target_input
             yf_ticker = f"{raw_ticker}.TW"
+    elif len(matched_names) > 1:
+        st.error(f"⚠️ 找到多檔包含 '{current_target_input}' 的股票，請輸入更明確的名稱：{', '.join(matched_names)}")
+        st.stop()
+    else:
+        target_name = matched_names[0]
+        raw_ticker = name_to_ticker[target_name]
+        yf_ticker = f"{raw_ticker}.TW"
 
-        # --- 抓取股價與計算技術指標 ---
+    # ==========================================
+    # 階段 1：極速運算區 (只抓 yfinance，秒速完成)
+    # ==========================================
+    with st.spinner('📡 正在抓取雲端行情與精算技術指標...'):
         try:
             hist = fetch_stock_history(yf_ticker)
             if hist.empty and auto_fallback and raw_ticker:
@@ -167,48 +168,14 @@ if st.session_state.analyzed_input:
             top_5_above_disp = sorted(sorted([b for b in bins_data if b['mid'] >= current_price_round and b['vol'] > 0], key=lambda x: x['vol'], reverse=True)[:5], key=lambda x: x['start'], reverse=True)
             top_5_below_disp = sorted(sorted([b for b in bins_data if b['mid'] < current_price_round and b['vol'] > 0], key=lambda x: x['vol'], reverse=True)[:5], key=lambda x: x['start'], reverse=True)
 
-            # --- 抓取法人買賣超 (精簡版 9 天迴圈，計算 5 日強度用) ---
-            last_9_dates = hist_64.index[-9:]
-            daily_records = []
-            
-            if not yf_ticker.endswith('.TWO'):
-                for d in last_9_dates:
-                    month_str, date_str = d.strftime('%Y%m01'), d.strftime('%Y%m%d')
-                    tw_date_str = f"{d.year - 1911}/{d.strftime('%m/%d')}"
-                    daily_vol, net_buy = 0, 0
-                    
-                    try:
-                        res_vol = requests.get(f"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?date={month_str}&stockNo={raw_ticker}", timeout=2).json()
-                        if res_vol.get('stat') == 'OK':
-                            df_vol = pd.DataFrame(res_vol['data'], columns=res_vol['fields'])
-                            vol_val = dict(zip(df_vol['日期'], df_vol['成交股數'])).get(tw_date_str, "0")
-                            daily_vol = round((int(vol_val.replace(',', '')) if isinstance(vol_val, str) else int(vol_val)) / 1000)
-                    except: pass
-                    
-                    try:
-                        res_t86 = requests.get(f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_str}&selectType=ALL", timeout=2).json()
-                        if res_t86.get('stat') == 'OK':
-                            df_t86 = pd.DataFrame(res_t86['data'], columns=res_t86['fields'])
-                            target_row = df_t86[df_t86['證券代號'] == raw_ticker]
-                            if not target_row.empty:
-                                buy_col = '三大法人買賣超股數' if '三大法人買賣超股數' in df_t86.columns else df_t86.columns[-1]
-                                net_buy = round(int(target_row[buy_col].values[0].replace(',', '')) / 1000)
-                    except: pass
-                    
-                    if daily_vol == 0: daily_vol = int(hist_64.loc[d, 'Volume']) 
-                    daily_records.append({'date_disp': d.strftime('%Y-%m-%d'), 'net_buy': net_buy, 'volume': daily_vol})
-            else:
-                for d in last_9_dates:
-                    daily_records.append({'date_disp': d.strftime('%Y-%m-%d'), 'net_buy': 0, 'volume': int(hist_64.loc[d, 'Volume'])})
-
         except Exception as e:
             st.error(f"❌ 發生錯誤：{e}")
             st.stop()
 
     # ==========================================
-    # 4. 網頁 UI：呈現結果
+    # 階段 2：畫面渲染區 (優先將速度快的資料顯示出來)
     # ==========================================
-    st.success(f"✅ {target_name} ({yf_ticker}) 分析完成！最新股價: {current_price_round:.2f}")
+    st.success(f"✅ {target_name} ({yf_ticker}) 價格與指標運算完成！最新股價: {current_price_round:.2f}")
 
     # --- 1. 技術指標總表 ---
     ma_trend = "✅ 多頭" if latest['MA5'] > latest['MA10'] > latest['MA20'] else ("⚠️ 空頭" if latest['MA5'] < latest['MA10'] < latest['MA20'] else "⭕ 盤整")
@@ -224,7 +191,7 @@ if st.session_state.analyzed_input:
                      f"DIF:{latest['DIF']:.1f} / MACD:{latest['MACD']:.1f}"]
     }))
 
-    # --- 2. 綜合三層圖表 (移除融資券版本) ---
+    # --- 2. 綜合三層圖表 ---
     allow_zoom = st.checkbox("🔍 啟用圖表縮放與拖曳功能 (防手機誤觸)", value=False)
     with st.container(border=True):
         st.subheader("📈 技術分析綜合儀表板")
@@ -288,29 +255,71 @@ if st.session_state.analyzed_input:
         st.write("**⬇️ 向下方支撐區**")
         for item in top_5_below_disp: st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
 
-    # --- 4. 近 5 日法人買賣強度 ---
-    st.subheader("📈 近 5 日法人買賣強度")
-    if yf_ticker.endswith('.TWO'):
-        st.info("⚠️ 該股為上櫃股票，目前僅支援上市股票之籌碼查詢。")
-        df_chip = pd.DataFrame()
-    else:
-        chip_results = []
-        for i in range(4, 9):
-            window = daily_records[i-4 : i+1] 
-            t_net_buy = sum(w['net_buy'] for w in window)
-            t_vol = sum(w['volume'] for w in window)
-            ratio = (t_net_buy / t_vol * 100) if t_vol > 0 else 0
-            chip_results.append({
-                '結算日期': daily_records[i]['date_disp'],
-                '當日買賣超 (張)': f"{daily_records[i]['net_buy']:,}",
-                '5日累計買賣超 (張)': f"{t_net_buy:,}",
-                '5日累計成交量 (張)': f"{t_vol:,}",
-                '買賣強度 (%)': f"{ratio:.2f}%"
-            })
-        df_chip = pd.DataFrame(list(reversed(chip_results)))
-        st.dataframe(df_chip, use_container_width=True)
 
-    # --- 5. Excel 匯出 ---
+    # ==========================================
+    # 階段 3：耗時的背景爬蟲 (證交所法人資料)
+    # ==========================================
+    st.subheader("📈 近 5 日法人買賣強度")
+    
+    df_chip = pd.DataFrame()
+    if yf_ticker.endswith('.TWO'):
+        st.info("⚠️ 該股為上櫃股票，目前僅支援上市股票之法人籌碼查詢。")
+    else:
+        with st.spinner("⏳ 正在向證交所 API 抓取近 5 日法人籌碼數據，請稍候..."):
+            try:
+                last_9_dates = hist_64.index[-9:]
+                daily_records = []
+                
+                for d in last_9_dates:
+                    month_str, date_str = d.strftime('%Y%m01'), d.strftime('%Y%m%d')
+                    tw_date_str = f"{d.year - 1911}/{d.strftime('%m/%d')}"
+                    daily_vol, net_buy = 0, 0
+                    
+                    try:
+                        res_vol = requests.get(f"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY?date={month_str}&stockNo={raw_ticker}", timeout=2).json()
+                        if res_vol.get('stat') == 'OK':
+                            df_vol = pd.DataFrame(res_vol['data'], columns=res_vol['fields'])
+                            vol_val = dict(zip(df_vol['日期'], df_vol['成交股數'])).get(tw_date_str, "0")
+                            daily_vol = round((int(vol_val.replace(',', '')) if isinstance(vol_val, str) else int(vol_val)) / 1000)
+                    except: pass
+                    
+                    try:
+                        res_t86 = requests.get(f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_str}&selectType=ALL", timeout=2).json()
+                        if res_t86.get('stat') == 'OK':
+                            df_t86 = pd.DataFrame(res_t86['data'], columns=res_t86['fields'])
+                            target_row = df_t86[df_t86['證券代號'] == raw_ticker]
+                            if not target_row.empty:
+                                buy_col = '三大法人買賣超股數' if '三大法人買賣超股數' in df_t86.columns else df_t86.columns[-1]
+                                net_buy = round(int(target_row[buy_col].values[0].replace(',', '')) / 1000)
+                    except: pass
+                    
+                    if daily_vol == 0: daily_vol = int(hist_64.loc[d, 'Volume']) 
+                    daily_records.append({'date_disp': d.strftime('%Y-%m-%d'), 'net_buy': net_buy, 'volume': daily_vol})
+
+                chip_results = []
+                for i in range(4, 9):
+                    window = daily_records[i-4 : i+1] 
+                    t_net_buy = sum(w['net_buy'] for w in window)
+                    t_vol = sum(w['volume'] for w in window)
+                    ratio = (t_net_buy / t_vol * 100) if t_vol > 0 else 0
+                    chip_results.append({
+                        '結算日期': daily_records[i]['date_disp'],
+                        '當日買賣超 (張)': f"{daily_records[i]['net_buy']:,}",
+                        '5日累計買賣超 (張)': f"{t_net_buy:,}",
+                        '5日累計成交量 (張)': f"{t_vol:,}",
+                        '買賣強度 (%)': f"{ratio:.2f}%"
+                    })
+                df_chip = pd.DataFrame(list(reversed(chip_results)))
+            except Exception as e:
+                st.error(f"法人資料抓取錯誤: {e}")
+                
+        # 顯示法人數據
+        if not df_chip.empty:
+            st.dataframe(df_chip, use_container_width=True)
+
+    # ==========================================
+    # 階段 4：Excel 匯出區
+    # ==========================================
     st.divider()
     st.subheader("💾 匯出完整 Excel 報表")
     
