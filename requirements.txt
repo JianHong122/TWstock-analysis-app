@@ -1,6 +1,6 @@
 streamlit
 pandas
-yfinance
+yfinance>=0.2.40
 requests
 plotly
 openpyxl
