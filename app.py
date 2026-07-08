@@ -25,7 +25,7 @@ def load_stock_list():
     try:
         df = pd.read_excel('TW50100.xlsx', engine='openpyxl', dtype=str)
         return {str(row[df.columns[1]]): str(row[df.columns[0]]).replace('.0', '') for _, row in df.iterrows()}, True
-    except: return {}, False
+    except: return {} , False
 
 
 # ==========================================
@@ -203,7 +203,7 @@ def step6_analyze_inst_strength(daily_records):
 
 
 # ==========================================
-# 【新增】副程式 7：從證交所抓取月的融資融券資料並分析
+# 副程式 7：從證交所抓取月的融資融券資料並分析
 # ==========================================
 @st.cache_data(ttl=300, show_spinner=False)
 def step7_fetch_and_analyze_margin(raw_ticker, hist_64, is_otc):
@@ -211,7 +211,6 @@ def step7_fetch_and_analyze_margin(raw_ticker, hist_64, is_otc):
     if is_otc:
         return pd.DataFrame()
         
-    # 提取近 64 日橫跨的所有不重複月份 (格式: YYYYMM01)
     unique_months = list(set([d.strftime('%Y%m01') for d in hist_64.index]))
     raw_margin_data = {}
     
@@ -221,7 +220,6 @@ def step7_fetch_and_analyze_margin(raw_ticker, hist_64, is_otc):
             res = requests.get(url, timeout=3).json()
             if res.get('stat') == 'OK':
                 for row in res['data']:
-                    # row[0]:日期(民國), row[4]:融資前日餘額, row[5]:融資今日餘額, row[10]:融券前日餘額, row[11]:融券今日餘額
                     tw_date = row[0].split('/')
                     ad_date_str = f"{int(tw_date[0])+1911}-{tw_date[1]}-{tw_date[2]}"
                     
@@ -238,7 +236,6 @@ def step7_fetch_and_analyze_margin(raw_ticker, hist_64, is_otc):
                     }
         except: pass
 
-    # 將計算好的每日信用交易數據，精準對齊回近 64 個交易日的日期結構中
     margin_records = []
     for d in hist_64.index:
         d_str = d.strftime('%Y-%m-%d')
@@ -254,7 +251,7 @@ def step7_fetch_and_analyze_margin(raw_ticker, hist_64, is_otc):
 # 介面繪製輔助函數 (Tech Chart)
 # ==========================================
 def render_tech_chart(hist_64, show_ma5, show_ma10, show_ma20, allow_zoom):
-    """輔助副程式：負責產生包含 K線、KD、MACD 的 3層子圖表"""
+    """負責產生包含 K線、KD、MACD 的 3層子圖表"""
     date_strings = hist_64.index.strftime('%Y-%m-%d')
     fig_k = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.5, 0.25, 0.25], subplot_titles=("價格與均線", "KD (9,3,3)", "MACD (12,26,9)"))
     
@@ -290,7 +287,6 @@ if st.button("🚀 開始分析", use_container_width=True):
 if st.session_state.analyzed_input:
     current_target = st.session_state.analyzed_input
     
-    # [準備工作] 解析輸入代號
     matched_names = [name for name in name_to_ticker.keys() if current_target in name] if list_loaded else []
     if len(matched_names) == 0:
         target_name = f"自訂代號 ({current_target})"
@@ -328,7 +324,6 @@ if st.session_state.analyzed_input:
     # ---------------- UI 顯示區 (前半部技術面) ----------------
     st.success(f"✅ {target_name} ({yf_ticker}) 價格與技術面指標載入完成！最新股價: {current_price_round:.2f}")
 
-    # 顯示 2 的結果 (技術指標表)
     st.subheader("📊 技術指標參考")
     st.table(pd.DataFrame({
         "項目": ["均線狀況", "KD狀況", "MACD狀況"],
@@ -338,7 +333,6 @@ if st.session_state.analyzed_input:
         "數值細項": [f"5MA:{latest['MA5']:.1f} / 10MA:{latest['MA10']:.1f} / 20MA:{latest['MA20']:.1f}", f"K:{latest['K']:.1f} / D:{latest['D']:.1f}", f"DIF:{latest['DIF']:.1f} / MACD:{latest['MACD']:.1f}"]
     }))
 
-    # 顯示 2 的結果 (K線綜合儀表板)
     allow_zoom = st.checkbox("🔍 啟用圖表縮放與拖曳", value=False)
     with st.container(border=True):
         st.subheader("📈 技術分析綜合儀表板")
@@ -346,13 +340,11 @@ if st.session_state.analyzed_input:
         fig_tech = render_tech_chart(hist_64, c1.checkbox("顯示 5MA", value=False), c2.checkbox("顯示 10MA", value=True), c3.checkbox("顯示 20MA", value=False), allow_zoom)
         st.plotly_chart(fig_tech, use_container_width=True)
 
-    # 顯示 3 的結果 (分價量圖)
     st.subheader("📊 64日分價量參考圖")
     fig_vol.update_xaxes(fixedrange=not allow_zoom)
     fig_vol.update_yaxes(fixedrange=not allow_zoom)
     st.plotly_chart(fig_vol, use_container_width=True)
 
-    # 顯示 4 的結果 (支撐壓力)
     st.subheader("🎯 關鍵支撐與壓力 (Top 5)")
     col1, col2 = st.columns(2)
     with col1:
@@ -372,12 +364,9 @@ if st.session_state.analyzed_input:
         st.subheader("📈 近 5 日法人買賣強度")
         st.info("⚠️ 該股為上櫃股票，目前僅支援上市股票之法人與融資券籌碼統計。")
     else:
-        # ▶ 接續在主程式背景繼續執行 5 ~ 6
         st.subheader("📈 近 5 日法人買賣強度")
         with st.spinner("⏳ 正在向證交所 API 抓取近 5 日法人籌碼數據..."):
-            # 副程式 5：抓取法人
             daily_records = step5_fetch_twse_data(raw_ticker, hist_64, is_otc)
-            # 副程式 6：分析強度與產出 9 日圖
             df_chip, fig_inst = step6_analyze_inst_strength(daily_records)
             
         if not df_chip.empty:
@@ -387,27 +376,24 @@ if st.session_state.analyzed_input:
             fig_inst.update_yaxes(fixedrange=not allow_zoom)
             st.plotly_chart(fig_inst, use_container_width=True)
 
-        # ▶ 【全新接續】執行副程式 7
         st.subheader("👥 信用交易籌碼分析 (近 64 日融資融券全覽)")
         with st.spinner("⏳ 正在向證交所快取月度信用交易統計，並計算餘額變動量..."):
-            # 副程式 7：抓取整月並過濾分析 64 天的變動
             df_margin = step7_fetch_and_analyze_margin(raw_ticker, hist_64, is_otc)
             
         if not df_margin.empty:
-            # 呈現最新一天的融資券結果與變動
             latest_margin = df_margin.iloc[-1]
+            # 【核心修正】：移除不合法的底線字元，全面修正格式化字串
             st.markdown(
                 f"最新交易日信用交易結算：\n"
-                f"* 融資餘額：**{latest_margin['融資餘額(張)']:,}** 張（當日變動：**{latest_margin['融資變動(張)']_:+:,}** 張）\n"
-                f"* 融券餘額：**{latest_margin['融券餘額(張)']:,}** 張（當日變動：**{latest_margin['融券變動(張)']_:+:,}** 張）"
+                f"* 融資餘額：**{latest_margin['融資餘額(張)']:,}** 張（當日變動：**{latest_margin['融資變動(張)']:+:,}** 張）\n"
+                f"* 融券餘額：**{latest_margin['融券餘額(張)']:,}** 張（當日變動：**{latest_margin['融券變動(張)']:+:,}** 張）"
             )
-            # 顯示近 10 天的詳細明細表供對照
             with st.expander("查看近 10 日融資融券異動明細表"):
                 st.dataframe(df_margin.tail(10).sort_index(ascending=False), use_container_width=True)
 
 
     # ----------------------------------------------------
-    # 結尾：Excel 報表匯出 (整合 1~7 所有運算結果)
+    # 結尾：Excel 報表匯出
     # ----------------------------------------------------
     st.divider()
     st.subheader("💾 匯出完整 Excel 報表")
