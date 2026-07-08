@@ -25,7 +25,7 @@ def load_stock_list():
     try:
         df = pd.read_excel('TW50100.xlsx', engine='openpyxl', dtype=str)
         return {str(row[df.columns[1]]): str(row[df.columns[0]]).replace('.0', '') for _, row in df.iterrows()}, True
-    except: return {} , False
+    except: return {}, False
 
 
 # ==========================================
@@ -193,7 +193,6 @@ def step6_analyze_inst_strength(daily_records):
         })
     df_chip = pd.DataFrame(list(reversed(chip_results)))
     
-    # 建立 9 日直條圖物件
     df_9_days = pd.DataFrame(daily_records)
     inst_colors_9 = ['#FF4B4B' if val > 0 else '#00B050' for val in df_9_days['net_buy']]
     fig_inst = go.Figure(data=[go.Bar(x=df_9_days['date_disp'], y=df_9_days['net_buy'], marker_color=inst_colors_9, text=df_9_days['net_buy'], textposition='auto')])
@@ -239,11 +238,13 @@ def step7_fetch_and_analyze_margin(raw_ticker, hist_64, is_otc):
     margin_records = []
     for d in hist_64.index:
         d_str = d.strftime('%Y-%m-%d')
-        day_data = raw_margin_data.get(d_str, {'融資餘額(張)': 0, '融資變動(張)': 0, '融券餘額(張)': 0, '融券變動(張)': 0})
+        # 【修正 1】使用 .copy() 確保每個日期的字典不會互相覆蓋干擾
+        day_data = raw_margin_data.get(d_str, {'融資餘額(張)': 0, '融資變動(張)': 0, '融券餘額(張)': 0, '融券變動(張)': 0}).copy()
         day_data['日期'] = d_str
         margin_records.append(day_data)
         
-    df_margin_64 = pd.DataFrame(margin_records).set_index('日期')
+    # 【修正 2】強制定義所有數字欄位為整數 (astype)，杜絕 f-string 格式化報錯
+    df_margin_64 = pd.DataFrame(margin_records).set_index('日期').astype(int)
     return df_margin_64
 
 
@@ -287,6 +288,7 @@ if st.button("🚀 開始分析", use_container_width=True):
 if st.session_state.analyzed_input:
     current_target = st.session_state.analyzed_input
     
+    # [準備工作] 解析輸入代號
     matched_names = [name for name in name_to_ticker.keys() if current_target in name] if list_loaded else []
     if len(matched_names) == 0:
         target_name = f"自訂代號 ({current_target})"
@@ -366,7 +368,9 @@ if st.session_state.analyzed_input:
     else:
         st.subheader("📈 近 5 日法人買賣強度")
         with st.spinner("⏳ 正在向證交所 API 抓取近 5 日法人籌碼數據..."):
+            # ▶ 副程式 5：抓取證交所資料
             daily_records = step5_fetch_twse_data(raw_ticker, hist_64, is_otc)
+            # ▶ 副程式 6：分析法人強度
             df_chip, fig_inst = step6_analyze_inst_strength(daily_records)
             
         if not df_chip.empty:
@@ -378,15 +382,17 @@ if st.session_state.analyzed_input:
 
         st.subheader("👥 信用交易籌碼分析 (近 64 日融資融券全覽)")
         with st.spinner("⏳ 正在向證交所快取月度信用交易統計，並計算餘額變動量..."):
+            # ▶ 副程式 7：抓取與分析信用交易
             df_margin = step7_fetch_and_analyze_margin(raw_ticker, hist_64, is_otc)
             
         if not df_margin.empty:
             latest_margin = df_margin.iloc[-1]
-            # 【核心修正】：移除不合法的底線字元，全面修正格式化字串
+            
+            # 【修正 3】大括號內強制包裝 int()，徹底消滅 ValueError
             st.markdown(
                 f"最新交易日信用交易結算：\n"
-                f"* 融資餘額：**{latest_margin['融資餘額(張)']:,}** 張（當日變動：**{latest_margin['融資變動(張)']:+:,}** 張）\n"
-                f"* 融券餘額：**{latest_margin['融券餘額(張)']:,}** 張（當日變動：**{latest_margin['融券變動(張)']:+:,}** 張）"
+                f"* 融資餘額：**{int(latest_margin['融資餘額(張)']):,}** 張（當日變動：**{int(latest_margin['融資變動(張)']):+:,}** 張）\n"
+                f"* 融券餘額：**{int(latest_margin['融券餘額(張)']):,}** 張（當日變動：**{int(latest_margin['融券變動(張)']):+:,}** 張）"
             )
             with st.expander("查看近 10 日融資融券異動明細表"):
                 st.dataframe(df_margin.tail(10).sort_index(ascending=False), use_container_width=True)
