@@ -29,18 +29,34 @@ def load_stock_list():
 
 
 # ==========================================
-# 副程式 1：抓取 YFinance 資料
+# 副程式 1：抓取 YFinance 資料 (🌟 防封鎖強化版)
 # ==========================================
 @st.cache_data(ttl=300, show_spinner=False)
 def step1_fetch_yf_data(ticker, raw_ticker, auto_fallback):
-    """負責從 Yahoo Finance 抓取歷史股價資料"""
-    hist = yf.Ticker(ticker).history(period="6mo")
+    """負責從 Yahoo Finance 抓取歷史股價資料，並加入偽裝避免雲端 IP 被鎖"""
+    
+    # 建立一個 Session，並偽裝成 Windows 電腦上的 Google Chrome 瀏覽器
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    })
+
+    try:
+        # 將偽裝的 session 傳給 yfinance
+        hist = yf.Ticker(ticker, session=session).history(period="6mo")
+    except Exception:
+        hist = pd.DataFrame()
+
     if hist.empty and auto_fallback and raw_ticker:
         ticker_two = f"{raw_ticker}.TWO"
-        hist_two = yf.Ticker(ticker_two).history(period="6mo")
-        if not hist_two.empty:
-            hist = hist_two
-            ticker = ticker_two
+        try:
+            hist_two = yf.Ticker(ticker_two, session=session).history(period="6mo")
+            if not hist_two.empty:
+                hist = hist_two
+                ticker = ticker_two
+        except Exception:
+            pass
+            
     return hist, ticker
 
 
@@ -238,12 +254,10 @@ def step7_fetch_and_analyze_margin(raw_ticker, hist_64, is_otc):
     margin_records = []
     for d in hist_64.index:
         d_str = d.strftime('%Y-%m-%d')
-        # 【修正 1】使用 .copy() 確保每個日期的字典不會互相覆蓋干擾
         day_data = raw_margin_data.get(d_str, {'融資餘額(張)': 0, '融資變動(張)': 0, '融券餘額(張)': 0, '融券變動(張)': 0}).copy()
         day_data['日期'] = d_str
         margin_records.append(day_data)
         
-    # 【修正 2】強制定義所有數字欄位為整數 (astype)，杜絕 f-string 格式化報錯
     df_margin_64 = pd.DataFrame(margin_records).set_index('日期').astype(int)
     return df_margin_64
 
@@ -368,9 +382,7 @@ if st.session_state.analyzed_input:
     else:
         st.subheader("📈 近 5 日法人買賣強度")
         with st.spinner("⏳ 正在向證交所 API 抓取近 5 日法人籌碼數據..."):
-            # ▶ 副程式 5：抓取證交所資料
             daily_records = step5_fetch_twse_data(raw_ticker, hist_64, is_otc)
-            # ▶ 副程式 6：分析法人強度
             df_chip, fig_inst = step6_analyze_inst_strength(daily_records)
             
         if not df_chip.empty:
@@ -382,13 +394,10 @@ if st.session_state.analyzed_input:
 
         st.subheader("👥 信用交易籌碼分析 (近 64 日融資融券全覽)")
         with st.spinner("⏳ 正在向證交所快取月度信用交易統計，並計算餘額變動量..."):
-            # ▶ 副程式 7：抓取與分析信用交易
             df_margin = step7_fetch_and_analyze_margin(raw_ticker, hist_64, is_otc)
             
         if not df_margin.empty:
             latest_margin = df_margin.iloc[-1]
-            
-            # 【修正 3】大括號內強制包裝 int()，徹底消滅 ValueError
             st.markdown(
                 f"最新交易日信用交易結算：\n"
                 f"* 融資餘額：**{int(latest_margin['融資餘額(張)']):,}** 張（當日變動：**{int(latest_margin['融資變動(張)']):+:,}** 張）\n"
@@ -396,7 +405,6 @@ if st.session_state.analyzed_input:
             )
             with st.expander("查看近 10 日融資融券異動明細表"):
                 st.dataframe(df_margin.tail(10).sort_index(ascending=False), use_container_width=True)
-
 
     # ----------------------------------------------------
     # 結尾：Excel 報表匯出
