@@ -238,7 +238,7 @@ def render_tech_chart(hist_64, show_ma5, show_ma10, show_ma20, allow_zoom):
 # ==========================================
 # 🚀 系統主程式 (Main Program)
 # ==========================================
-st.title("📊 乂煞氣a牧場小霸王乂")
+st.title("📊 牧場小霸王")
 st.markdown("**技術K線均線**、**KD/MACD**、**分價量支撐壓力** 與 **五日法人買賣強度**")
 
 name_to_ticker, list_loaded = load_stock_list()
