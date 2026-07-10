@@ -153,6 +153,7 @@ def fetch_twse_csv_data(date_str, inst_type, debug=False):
 
 
 def fetch_margin_json_data(date_str, raw_ticker, debug=False):
+    """(新功能) 利用 exchangeReport API 下載融資券 JSON，並正確解析 tables 結構"""
     url = f"https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&date={date_str}&selectType=ALL"
     try:
         res = requests.get(url, timeout=5).json()
@@ -160,27 +161,43 @@ def fetch_margin_json_data(date_str, raw_ticker, debug=False):
         stat = res.get('stat', 'Unknown')
         if debug: st.write(f"👉 請求融資券 API: `{date_str}` | 狀態: `{stat}`")
         
-        if stat == 'OK' and 'data' in res:
-            for row in res['data']:
-                # row[0] 是股票代號
-                if str(row[0]).strip() == raw_ticker:
-                    if debug: st.success(f"✅ 找到 {raw_ticker} 融資券資料！\n原始 Row 數據: {row}")
-                    # 依據固定欄位位置解析 (5: 融資前日, 6: 融資今日, 11: 融券前日, 12: 融券今日)
-                    m_prev = int(str(row[5]).replace(',', ''))
-                    m_today = int(str(row[6]).replace(',', ''))
-                    s_prev = int(str(row[11]).replace(',', ''))
-                    s_today = int(str(row[12]).replace(',', ''))
-                    
-                    return (m_today - m_prev), m_today, (s_today - s_prev), s_today
-            if debug: st.warning(f"⚠️ API 有資料，但在 {date_str} 找不到代號 {raw_ticker}。")
+        if stat == 'OK':
+            # 【Debug 升級】如實輸出 JSON 最外層的結構，讓你看見真實面貌
+            if debug: st.write(f"🔍 成功收到資料！外層擁有的標籤 (Keys): `{list(res.keys())}`")
+            
+            # 正確對應 MI_MARGN 的 tables 結構
+            tables = res.get('tables', [])
+            
+            # (保險機制) 萬一哪天證交所又改回 data，我們也接得住
+            if not tables and 'data' in res:
+                tables = [{'data': res['data']}]
+                
+            found = False
+            for table in tables:
+                for row in table.get('data', []):
+                    # row[0] 是股票代號
+                    if str(row[0]).strip() == raw_ticker:
+                        found = True
+                        if debug: st.success(f"✅ 找到 {raw_ticker} 融資券資料！\n原始陣列內容: `{row}`")
+                        
+                        # 依據固定欄位位置解析 (5:融資前日, 6:融資今日, 11:融券前日, 12:融券今日)
+                        m_prev = int(str(row[5]).replace(',', ''))
+                        m_today = int(str(row[6]).replace(',', ''))
+                        s_prev = int(str(row[11]).replace(',', ''))
+                        s_today = int(str(row[12]).replace(',', ''))
+                        
+                        return (m_today - m_prev), m_today, (s_today - s_prev), s_today
+            
+            if not found and debug:
+                st.warning(f"⚠️ API 狀態 OK，但遍歷了整個表格，找不到代號 {raw_ticker} 的資料。")
+                
         else:
-            if debug: st.warning(f"⚠️ {date_str} 證交所回傳非 OK 或無 data (可能是假日或無交易)。")
+            if debug: st.warning(f"⚠️ {date_str} 證交所回傳狀態為 {stat} (無交易或假日)。")
             
     except Exception as e: 
-        if debug: st.error(f"❌ 解析 JSON 發生錯誤: {e}")
+        if debug: st.error(f"❌ 請求或解析 JSON 發生錯誤: {e}")
         
     return 0, 0, 0, 0
-
 
 def step6_extract_10day_institutional_data(raw_ticker, hist_64, debug=False):
     last_10_dates = hist_64.index[-10:]
