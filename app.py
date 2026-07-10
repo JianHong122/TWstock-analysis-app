@@ -253,36 +253,18 @@ def step6_extract_10day_institutional_data(raw_ticker, hist_64, debug=False):
     df_t_res = pd.DataFrame(trust_records)
     df_m_res = pd.DataFrame(margin_records)
     
-    # 圖表繪製部分維持不變 (省略過長的圖表程式碼以求精簡，請保留原本的圖表繪製碼)
-    # ... [保留原本的 fig_f, fig_t, fig_ml, fig_ms 繪製程式碼] ...
-
-    # 繪製外資長條圖
+    # 圖 1: 外資
     fig_f = px.bar(df_f_res, x='日期', y='外資買賣超(張)', title='近10日外資買賣超狀況', text_auto=True)
     fig_f.update_traces(marker_color=['#FF4B4B' if val > 0 else '#00B050' for val in df_f_res['外資買賣超(張)']])
     fig_f.update_layout(margin=dict(l=20, r=20, t=40, b=20), height=300)
     
-    # 繪製投信長條圖
+    # 圖 2: 投信
     fig_t = px.bar(df_t_res, x='日期', y='投信買賣超(張)', title='近10日投信買賣超狀況', text_auto=True)
     fig_t.update_traces(marker_color=['#FF4B4B' if val > 0 else '#00B050' for val in df_t_res['投信買賣超(張)']])
     fig_t.update_layout(margin=dict(l=20, r=20, t=40, b=20), height=300)
 
-    # 圖 3: 融資雙軸圖 (Bar: 變動, Line: 餘額)
-    fig_ml = make_subplots(specs=[[{"secondary_y": True}]])
-    fig_ml.add_trace(go.Bar(x=df_m_res['日期'], y=df_m_res['融資變動(張)'], name='融資變動', marker_color=['#FF4B4B' if val > 0 else '#00B050' for val in df_m_res['融資變動(張)']]), secondary_y=False)
-    fig_ml.add_trace(go.Scatter(x=df_m_res['日期'], y=df_m_res['融資餘額(張)'], name='融資餘額', mode='lines+markers', line=dict(color='#FF9900', width=2)), secondary_y=True)
-    fig_ml.update_layout(title_text='近10日融資變動與餘額', margin=dict(l=20, r=20, t=40, b=20), height=300, hovermode="x unified")
-    fig_ml.update_yaxes(title_text="變動(張)", secondary_y=False)
-    fig_ml.update_yaxes(title_text="餘額(張)", showgrid=False, secondary_y=True)
-
-    # 圖 4: 融券雙軸圖 (Bar: 變動, Line: 餘額)
-    fig_ms = make_subplots(specs=[[{"secondary_y": True}]])
-    fig_ms.add_trace(go.Bar(x=df_m_res['日期'], y=df_m_res['融券變動(張)'], name='融券變動', marker_color=['#FF4B4B' if val > 0 else '#00B050' for val in df_m_res['融券變動(張)']]), secondary_y=False)
-    fig_ms.add_trace(go.Scatter(x=df_m_res['日期'], y=df_m_res['融券餘額(張)'], name='融券餘額', mode='lines+markers', line=dict(color='#0066FF', width=2)), secondary_y=True)
-    fig_ms.update_layout(title_text='近10日融券變動與餘額', margin=dict(l=20, r=20, t=40, b=20), height=300, hovermode="x unified")
-    fig_ms.update_yaxes(title_text="變動(張)", secondary_y=False)
-    fig_ms.update_yaxes(title_text="餘額(張)", showgrid=False, secondary_y=True)
-
-    return df_f_res, df_t_res, df_m_res, fig_f, fig_t, fig_ml, fig_ms
+    # 🛑 移除了融資融券的 Plotly 畫圖邏輯，回傳變數也少掉 fig_ml, fig_ms
+    return df_f_res, df_t_res, df_m_res, fig_f, fig_t
 
 
 # ==========================================
@@ -401,7 +383,7 @@ if st.session_state.analyzed_input:
         st.write("**⬇️ 向下方支撐區**")
         for item in top_5_below: st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
 
-    # ----------------------------------------------------
+   # ----------------------------------------------------
     # 背景獨立執行「法人及融資券籌碼分析」
     # ----------------------------------------------------
     st.divider()
@@ -424,20 +406,29 @@ if st.session_state.analyzed_input:
             
             if is_debug_mode:
                 with st.expander("🛠️ Debug 運作日誌 (展開查看)", expanded=True):
-                    # 將 debug 變數傳入
-                    df_foreign_export, df_trust_export, df_margin_export, fig_f, fig_t, fig_ml, fig_ms = step6_extract_10day_institutional_data(raw_ticker, hist_64, debug=True)
+                    # 配合副程式修改，拿掉 fig_ml, fig_ms
+                    df_foreign_export, df_trust_export, df_margin_export, fig_f, fig_t = step6_extract_10day_institutional_data(raw_ticker, hist_64, debug=True)
             else:
-                # 正常不印出 debug 訊息
-                df_foreign_export, df_trust_export, df_margin_export, fig_f, fig_t, fig_ml, fig_ms = step6_extract_10day_institutional_data(raw_ticker, hist_64, debug=False)
+                df_foreign_export, df_trust_export, df_margin_export, fig_f, fig_t = step6_extract_10day_institutional_data(raw_ticker, hist_64, debug=False)
             
-        # UI 佈局：分兩排並列顯示
+        # UI 佈局：分兩排顯示
+        # 第一排：外資與投信 (維持圖表)
         col_f, col_t = st.columns(2)
         with col_f: st.plotly_chart(fig_f, use_container_width=True)
         with col_t: st.plotly_chart(fig_t, use_container_width=True)
         
-        col_ml, col_ms = st.columns(2)
-        with col_ml: st.plotly_chart(fig_ml, use_container_width=True)
-        with col_ms: st.plotly_chart(fig_ms, use_container_width=True)
+        # 第二排：融資與融券 (改用乾淨表格呈現)
+        if not df_margin_export.empty:
+            st.markdown("#### 📊 近 10 日信用交易明細 (張)")
+            col_m, col_s = st.columns(2)
+            
+            # 使用 set_index('日期') 可以讓表格最左邊沒有多餘的數字索引，版面更整齊
+            with col_m:
+                st.write("**💰 融資狀況 (散戶做多指標)**")
+                st.dataframe(df_margin_export[['日期', '融資變動(張)', '融資餘額(張)']].set_index('日期'), use_container_width=True)
+            with col_s:
+                st.write("**📉 融券狀況 (散戶做空指標)**")
+                st.dataframe(df_margin_export[['日期', '融券變動(張)', '融券餘額(張)']].set_index('日期'), use_container_width=True)
 
     # ----------------------------------------------------
     # 結尾：Excel 報表匯出
