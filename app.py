@@ -31,7 +31,7 @@ def load_stock_list():
 
 
 # ==========================================
-# 副程式 1：抓取 YFinance 資料
+# 副程式 1：抓取 YFinance 資料 (加入防擋偽裝機制)
 # ==========================================
 @st.cache_data(ttl=300, show_spinner=False)
 def step1_fetch_yf_data(ticker, raw_ticker, auto_fallback, target_date_str):
@@ -41,11 +41,18 @@ def step1_fetch_yf_data(ticker, raw_ticker, auto_fallback, target_date_str):
     start_str = start_dt.strftime('%Y-%m-%d')
     end_str = end_dt.strftime('%Y-%m-%d')
 
-    hist = yf.Ticker(ticker).history(start=start_str, end=end_str)
+    # 👇 核心解法：建立自訂 Session，偽裝成一般的 Windows Chrome 瀏覽器
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    })
+
+    # 將 session 傳遞給 yf.Ticker
+    hist = yf.Ticker(ticker, session=session).history(start=start_str, end=end_str)
     
     if hist.empty and auto_fallback and raw_ticker:
         ticker_two = f"{raw_ticker}.TWO"
-        hist_two = yf.Ticker(ticker_two).history(start=start_str, end=end_str)
+        hist_two = yf.Ticker(ticker_two, session=session).history(start=start_str, end=end_str)
         if not hist_two.empty:
             hist = hist_two
             ticker = ticker_two
