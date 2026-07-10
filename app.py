@@ -4,6 +4,7 @@ import yfinance as yf
 import requests
 import io
 import re
+import time  # 👈 新增這個，用於防止爬蟲被鎖 IP
 from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go  
@@ -138,91 +139,90 @@ def step4_find_support_resistance(bins_data, current_price_round):
 # ==========================================
 # 副程式 5 & 6 相關：即時下載外資、投信 CSV 與 融資券 JSON
 # ==========================================
-def fetch_twse_csv_data(date_str, inst_type):
-    """外資、投信維持 CSV 下載，不留快取"""
+def fetch_twse_csv_data(date_str, inst_type, debug=False):
     url = f"https://www.twse.com.tw/rwd/zh/fund/{inst_type}?date={date_str}&response=csv"
     try:
         res = requests.get(url, timeout=5)
         res.encoding = 'big5' 
         df = pd.read_csv(io.StringIO(res.text), names=list(range(20)), on_bad_lines='skip')
+        if debug and df.empty: st.warning(f"[{date_str}] {inst_type} CSV 取得為空")
         return df
-    except: return pd.DataFrame()
+    except Exception as e: 
+        if debug: st.error(f"[{date_str}] {inst_type} CSV 請求錯誤: {e}")
+        return pd.DataFrame()
 
 
-def fetch_margin_json_data(date_str, raw_ticker):
-    """(新功能) 利用 exchangeReport API 下載融資券 JSON，免去 CSV 亂碼"""
+def fetch_margin_json_data(date_str, raw_ticker, debug=False):
     url = f"https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&date={date_str}&selectType=ALL"
     try:
         res = requests.get(url, timeout=5).json()
         
-        # 尋找包含資料的表格結構
-        tables = res.get('tables', [])
-        if not tables and 'data' in res:
-            tables = [{'fields': res.get('fields', []), 'data': res.get('data', [])}]
+        stat = res.get('stat', 'Unknown')
+        if debug: st.write(f"👉 請求融資券 API: `{date_str}` | 狀態: `{stat}`")
+        
+        if stat == 'OK' and 'data' in res:
+            for row in res['data']:
+                # row[0] 是股票代號
+                if str(row[0]).strip() == raw_ticker:
+                    if debug: st.success(f"✅ 找到 {raw_ticker} 融資券資料！\n原始 Row 數據: {row}")
+                    # 依據固定欄位位置解析 (5: 融資前日, 6: 融資今日, 11: 融券前日, 12: 融券今日)
+                    m_prev = int(str(row[5]).replace(',', ''))
+                    m_today = int(str(row[6]).replace(',', ''))
+                    s_prev = int(str(row[11]).replace(',', ''))
+                    s_today = int(str(row[12]).replace(',', ''))
+                    
+                    return (m_today - m_prev), m_today, (s_today - s_prev), s_today
+            if debug: st.warning(f"⚠️ API 有資料，但在 {date_str} 找不到代號 {raw_ticker}。")
+        else:
+            if debug: st.warning(f"⚠️ {date_str} 證交所回傳非 OK 或無 data (可能是假日或無交易)。")
             
-        for table in tables:
-            fields = table.get('fields', [])
-            # 動態尋找欄位，避免寫死位置防呆
-            if '股票代號' in fields and '融資今日餘額' in fields:
-                idx_code = fields.index('股票代號')
-                idx_m_today = fields.index('融資今日餘額')
-                idx_m_prev = fields.index('融資前日餘額')
-                idx_s_today = fields.index('融券今日餘額')
-                idx_s_prev = fields.index('融券前日餘額')
-                
-                for row in table.get('data', []):
-                    if str(row[idx_code]).strip() == raw_ticker:
-                        m_today = int(str(row[idx_m_today]).replace(',', ''))
-                        m_prev = int(str(row[idx_m_prev]).replace(',', ''))
-                        s_today = int(str(row[idx_s_today]).replace(',', ''))
-                        s_prev = int(str(row[idx_s_prev]).replace(',', ''))
-                        
-                        m_change = m_today - m_prev # 直接用 API 內建的前日餘額相減
-                        s_change = s_today - s_prev
-                        
-                        return m_change, m_today, s_change, s_today
-    except Exception as e: pass
+    except Exception as e: 
+        if debug: st.error(f"❌ 解析 JSON 發生錯誤: {e}")
+        
     return 0, 0, 0, 0
 
 
-def step6_extract_10day_institutional_data(raw_ticker, hist_64):
-    """負責下載資料並依據欄位位置抽取近 10 日三大法人與融資券數據"""
+def step6_extract_10day_institutional_data(raw_ticker, hist_64, debug=False):
     last_10_dates = hist_64.index[-10:]
     
     foreign_records = []
     trust_records = []
     margin_records = []
     
+    if debug: st.info("開始爬取近 10 日籌碼資料，啟動防擋機制 (每次停頓 1.5 秒)...")
+    
     for d in last_10_dates:
         date_api_str = d.strftime('%Y%m%d')
         date_disp_str = d.strftime('%m/%d')
         
-        # 1. 處理外資 (TWT38U) - 遵照指定讀取 Index 1(B), 2(C), 5(F)
-        df_foreign = fetch_twse_csv_data(date_api_str, "TWT38U")
+        if debug: st.write(f"--- 處理日期: {date_disp_str} ---")
+        
+        # 1. 外資
+        df_foreign = fetch_twse_csv_data(date_api_str, "TWT38U", debug)
         net_f = 0
         if not df_foreign.empty:
             df_foreign[1] = df_foreign[1].astype(str).str.replace(r'[=" ]', '', regex=True)
             target_row = df_foreign[df_foreign[1] == raw_ticker]
             if not target_row.empty:
-                val_str = str(target_row.iloc[0, 5]).replace(',', '').strip()
-                try: net_f = round(int(val_str) / 1000)
+                try: net_f = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()) / 1000)
                 except: pass
         foreign_records.append({'日期': date_disp_str, '外資買賣超(張)': net_f})
+        time.sleep(0.5) # 防擋延遲
         
-        # 2. 處理投信 (TWT44U) - 遵照指定讀取 Index 1(B), 2(C), 5(F)
-        df_trust = fetch_twse_csv_data(date_api_str, "TWT44U")
+        # 2. 投信
+        df_trust = fetch_twse_csv_data(date_api_str, "TWT44U", debug)
         net_t = 0
         if not df_trust.empty:
             df_trust[1] = df_trust[1].astype(str).str.replace(r'[=" ]', '', regex=True)
             target_row = df_trust[df_trust[1] == raw_ticker]
             if not target_row.empty:
-                val_str = str(target_row.iloc[0, 5]).replace(',', '').strip()
-                try: net_t = round(int(val_str) / 1000)
+                try: net_t = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()) / 1000)
                 except: pass
         trust_records.append({'日期': date_disp_str, '投信買賣超(張)': net_t})
+        time.sleep(0.5) # 防擋延遲
         
-        # 3. 處理融資券 (MI_MARGN JSON)
-        m_change, m_today, s_change, s_today = fetch_margin_json_data(date_api_str, raw_ticker)
+        # 3. 融資券
+        m_change, m_today, s_change, s_today = fetch_margin_json_data(date_api_str, raw_ticker, debug)
         margin_records.append({
             '日期': date_disp_str,
             '融資變動(張)': m_change,
@@ -230,17 +230,21 @@ def step6_extract_10day_institutional_data(raw_ticker, hist_64):
             '融券變動(張)': s_change,
             '融券餘額(張)': s_today
         })
+        time.sleep(0.5) # 防擋延遲
         
     df_f_res = pd.DataFrame(foreign_records)
     df_t_res = pd.DataFrame(trust_records)
     df_m_res = pd.DataFrame(margin_records)
     
-    # 圖 1: 外資
+    # 圖表繪製部分維持不變 (省略過長的圖表程式碼以求精簡，請保留原本的圖表繪製碼)
+    # ... [保留原本的 fig_f, fig_t, fig_ml, fig_ms 繪製程式碼] ...
+
+    # 繪製外資長條圖
     fig_f = px.bar(df_f_res, x='日期', y='外資買賣超(張)', title='近10日外資買賣超狀況', text_auto=True)
     fig_f.update_traces(marker_color=['#FF4B4B' if val > 0 else '#00B050' for val in df_f_res['外資買賣超(張)']])
     fig_f.update_layout(margin=dict(l=20, r=20, t=40, b=20), height=300)
     
-    # 圖 2: 投信
+    # 繪製投信長條圖
     fig_t = px.bar(df_t_res, x='日期', y='投信買賣超(張)', title='近10日投信買賣超狀況', text_auto=True)
     fig_t.update_traces(marker_color=['#FF4B4B' if val > 0 else '#00B050' for val in df_t_res['投信買賣超(張)']])
     fig_t.update_layout(margin=dict(l=20, r=20, t=40, b=20), height=300)
@@ -384,7 +388,12 @@ if st.session_state.analyzed_input:
     # 背景獨立執行「法人及融資券籌碼分析」
     # ----------------------------------------------------
     st.divider()
-    st.subheader("📈 近 10 日市場籌碼動向 (外資 / 投信 / 融資券)")
+    col_title, col_debug = st.columns([3, 1])
+    with col_title:
+        st.subheader("📈 近 10 日市場籌碼動向 (外資 / 投信 / 融資券)")
+    with col_debug:
+        is_debug_mode = st.checkbox("🐛 開啟開發者 Debug 模式")
+        
     is_otc = yf_ticker.endswith('.TWO')
     
     df_foreign_export = pd.DataFrame()
@@ -394,8 +403,15 @@ if st.session_state.analyzed_input:
     if is_otc:
         st.info("⚠️ 該股為上櫃股票，目前僅支援上市股票之三大法人與信用交易籌碼查詢。")
     else:
-        with st.spinner("⏳ 正在即時向證交所下載近 10 日 CSV 法人數據與 JSON 融資券數據，請稍候..."):
-            df_foreign_export, df_trust_export, df_margin_export, fig_f, fig_t, fig_ml, fig_ms = step6_extract_10day_institutional_data(raw_ticker, hist_64)
+        with st.spinner("⏳ 正在即時向證交所下載近 10 日 CSV 法人數據與 JSON 融資券數據，請稍候... (為防被鎖 IP 會稍微停頓)"):
+            
+            if is_debug_mode:
+                with st.expander("🛠️ Debug 運作日誌 (展開查看)", expanded=True):
+                    # 將 debug 變數傳入
+                    df_foreign_export, df_trust_export, df_margin_export, fig_f, fig_t, fig_ml, fig_ms = step6_extract_10day_institutional_data(raw_ticker, hist_64, debug=True)
+            else:
+                # 正常不印出 debug 訊息
+                df_foreign_export, df_trust_export, df_margin_export, fig_f, fig_t, fig_ml, fig_ms = step6_extract_10day_institutional_data(raw_ticker, hist_64, debug=False)
             
         # UI 佈局：分兩排並列顯示
         col_f, col_t = st.columns(2)
