@@ -2,9 +2,8 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import requests
-import math
-import re
 import io
+import re
 from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go  
@@ -17,6 +16,8 @@ from openpyxl.utils import get_column_letter
 # ==========================================
 if 'analyzed_input' not in st.session_state:
     st.session_state.analyzed_input = None
+if 'target_date' not in st.session_state:
+    st.session_state.target_date = None
 
 st.set_page_config(page_title="台股籌碼分析工具", page_icon="📈", layout="centered")
 
@@ -29,17 +30,27 @@ def load_stock_list():
 
 
 # ==========================================
-# 副程式 1：抓取 YFinance 資料
+# 副程式 1：抓取 YFinance 資料 (加入日期區間邏輯)
 # ==========================================
 @st.cache_data(ttl=300, show_spinner=False)
-def step1_fetch_yf_data(ticker, raw_ticker, auto_fallback):
-    """副程式 1：負責從 Yahoo Finance 抓取歷史股價資料"""
-    hist = yf.Ticker(ticker).history(period="6mo")
+def step1_fetch_yf_data(ticker, raw_ticker, auto_fallback, target_date_str):
+    """副程式 1：負責從 Yahoo Finance 抓取歷史股價資料，並支援指定結束日期"""
+    
+    # 處理日期：利用 pandas 處理日期加減
+    # YFinance 的 end 是 exclusive (不包含)，所以我們要把目標日 + 1天
+    end_dt = pd.to_datetime(target_date_str, format='%Y/%m/%d') + pd.Timedelta(days=1)
+    # 往前抓 6 個月，確保資料足以運算 64天分價量與 MA/MACD 等技術指標
+    start_dt = end_dt - pd.DateOffset(months=6) 
+    
+    start_str = start_dt.strftime('%Y-%m-%d')
+    end_str = end_dt.strftime('%Y-%m-%d')
+
+    hist = yf.Ticker(ticker).history(start=start_str, end=end_str)
     
     # 處理上櫃股票 (.TWO) 的自動退退切換
     if hist.empty and auto_fallback and raw_ticker:
         ticker_two = f"{raw_ticker}.TWO"
-        hist_two = yf.Ticker(ticker_two).history(period="6mo")
+        hist_two = yf.Ticker(ticker_two).history(start=start_str, end=end_str)
         if not hist_two.empty:
             hist = hist_two
             ticker = ticker_two
@@ -238,15 +249,38 @@ def render_tech_chart(hist_64, show_ma5, show_ma10, show_ma20, allow_zoom):
 # ==========================================
 # 🚀 系統主程式 (Main Program)
 # ==========================================
-st.title("📊 牧場小霸王")
-st.markdown("**技術K線均線**、**KD/MACD**、**分價量支撐壓力** 與 **五日法人買賣強度**")
+st.title("📊 台股籌碼與技術指標綜合分析")
+st.markdown("支援 **技術K線均線**、**KD/MACD**、**分價量防守** 與 **五日法人買賣強度**")
 
 name_to_ticker, list_loaded = load_stock_list()
 if not list_loaded: st.warning("⚠️ 找不到 'TW50100.xlsx'，請直接輸入股票代號。")
 
 user_input = st.text_input("🔍 請輸入個股名稱或代號：", placeholder="例如: 台積電 或 2330")
+
+# --- 新增的日期輸入與防呆處理區塊 ---
+default_date = datetime.now().strftime("%Y/%m/%d")
+target_date_input = st.text_input("📅 請輸入查詢基準日 (西元年/月/日)：", value=default_date, placeholder="例如: 2024/01/01")
+
 if st.button("🚀 開始分析", use_container_width=True):
-    st.session_state.analyzed_input = user_input
+    input_date_str = target_date_input.strip()
+    
+    # 空白處理：如果使用者清空輸入框，自動代入預設日期(今天)
+    if not input_date_str:
+        input_date_str = default_date
+        
+    # 格式防呆：檢查是否符合 YYYY/MM/DD
+    try:
+        # 嘗試轉換日期，確認格式正確
+        datetime.strptime(input_date_str, "%Y/%m/%d")
+        
+        # 驗證成功，存入 session_state
+        st.session_state.analyzed_input = user_input
+        st.session_state.target_date = input_date_str
+    except ValueError:
+        st.error("⚠️ 日期格式錯誤！請輸入正確的「西元年/月/日」格式，例如：2024/01/01")
+        st.stop() # 停止後續運算
+
+# ------------------------------------
 
 if st.session_state.analyzed_input:
     current_target = st.session_state.analyzed_input
@@ -272,10 +306,10 @@ if st.session_state.analyzed_input:
     
     with st.spinner('📡 正在運算核心技術指標與分價量...'):
         
-        # ▶ 執行 1：抓取 YFinance
-        hist, yf_ticker = step1_fetch_yf_data(yf_ticker, raw_ticker, auto_fallback)
+        # ▶ 執行 1：抓取 YFinance (將基準日期傳入)
+        hist, yf_ticker = step1_fetch_yf_data(yf_ticker, raw_ticker, auto_fallback, st.session_state.target_date)
         if hist.empty:
-            st.error("❌ 無法取得歷史資料。請確認代號。")
+            st.error("❌ 無法取得該日期之前的歷史資料。請確認代號與日期。")
             st.stop()
             
         # ▶ 執行 2：計算技術指標
@@ -289,7 +323,9 @@ if st.session_state.analyzed_input:
         top_5_above, top_5_below = step4_find_support_resistance(bins_data, current_price_round)
 
     # ---------------- UI 顯示區 (前半部) ----------------
-    st.success(f"✅ {target_name} ({yf_ticker}) 分析完成！最新股價: {current_price_round:.2f}")
+    # 抓出 YFinance 實際取得的「最新一日」日期，展現"自動尋找最近交易日"的效果
+    actual_last_date = hist_64.index[-1].strftime('%Y/%m/%d')
+    st.success(f"✅ {target_name} ({yf_ticker}) 分析完成！實際查詢基準日: **{actual_last_date}** / 股價: **{current_price_round:.2f}**")
 
     # 顯示 2 的結果 (技術指標表)
     st.subheader("📊 技術指標參考")
