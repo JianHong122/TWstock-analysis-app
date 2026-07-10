@@ -19,7 +19,6 @@ if 'analyzed_input' not in st.session_state:
 if 'target_date' not in st.session_state:
     st.session_state.target_date = None
 
-# 修改 7：設定頁面標題為「牧場小霸王」
 st.set_page_config(page_title="牧場小霸王", page_icon="📈", layout="centered")
 
 @st.cache_data
@@ -139,29 +138,23 @@ def step4_find_support_resistance(bins_data, current_price_round):
 
 
 # ==========================================
-# 修改區塊：副程式 5 - 快取全市場三大法人資料 (背景暫存核心)
+# 副程式 5 & 6 相關：即時下載外資與投信 CSV 資料 (每次執行)
 # ==========================================
-# ttl=86400 代表快取保留 24 小時，一天內只需下載一次
-@st.cache_data(ttl=86400, show_spinner=False)
-def fetch_twse_market_inst_data(date_str, inst_type):
-    """取得指定日期全市場的外資或投信買賣超資料 (存入背景快取)"""
-    url = f"https://www.twse.com.tw/rwd/zh/fund/{inst_type}?date={date_str}&response=json"
+def fetch_twse_csv_data(date_str, inst_type):
+    """每次即時下載指定的 CSV 資料，不留快取"""
+    url = f"https://www.twse.com.tw/rwd/zh/fund/{inst_type}?date={date_str}&response=csv"
     try:
-        res = requests.get(url, timeout=5).json()
-        if res.get('stat') == 'OK':
-            # 將 JSON 轉為 DataFrame，方便後續用代號搜尋
-            return pd.DataFrame(res['data'], columns=res['fields'])
+        res = requests.get(url, timeout=5)
+        res.encoding = 'big5'  # 證交所的 CSV 檔案一般是 Big5 編碼
+        # 強制展開為 20 欄，避免證交所標題列長度不一造成解析錯誤
+        df = pd.read_csv(io.StringIO(res.text), names=list(range(20)), on_bad_lines='skip')
+        return df
     except:
-        pass
-    return pd.DataFrame()
+        return pd.DataFrame()
 
 
-# ==========================================
-# 修改區塊：副程式 6 - 抽取近十日個股資料並產出圖表
-# ==========================================
 def step6_extract_10day_institutional_data(raw_ticker, hist_64):
-    """負責從快取的全市場資料中，撈出目標個股近10日的買賣超數據"""
-    # 確保只撈有開盤交易的最後 10 天
+    """負責下載 CSV 並依據欄位位置抽取近 10 日資料"""
     last_10_dates = hist_64.index[-10:]
     
     foreign_records = []
@@ -172,35 +165,44 @@ def step6_extract_10day_institutional_data(raw_ticker, hist_64):
         date_disp_str = d.strftime('%m/%d')
         
         # 1. 處理外資 (TWT38U)
-        df_foreign = fetch_twse_market_inst_data(date_api_str, "TWT38U")
+        df_foreign = fetch_twse_csv_data(date_api_str, "TWT38U")
         net_f = 0
-        if not df_foreign.empty and '證券代號' in df_foreign.columns:
-            target_row = df_foreign[df_foreign['證券代號'] == raw_ticker]
+        if not df_foreign.empty:
+            # 清理 B 欄 (索引1) 的證券代號，去除證交所預設的 `="` 和空白
+            df_foreign[1] = df_foreign[1].astype(str).str.replace(r'[=" ]', '', regex=True)
+            target_row = df_foreign[df_foreign[1] == raw_ticker]
+            
             if not target_row.empty:
-                # 買賣超股數通常在最後幾欄，或直接以欄位名稱對應 (F欄概念)
-                buy_col = '買賣超股數' if '買賣超股數' in df_foreign.columns else df_foreign.columns[-1]
-                net_f = round(int(target_row[buy_col].values[0].replace(',', '')) / 1000)
+                # F 欄 (索引5) 是買賣超股數
+                val_str = str(target_row.iloc[0, 5]).replace(',', '').strip()
+                try: net_f = round(int(val_str) / 1000)
+                except: pass
         foreign_records.append({'日期': date_disp_str, '外資買賣超(張)': net_f})
         
         # 2. 處理投信 (TWT44U)
-        df_trust = fetch_twse_market_inst_data(date_api_str, "TWT44U")
+        df_trust = fetch_twse_csv_data(date_api_str, "TWT44U")
         net_t = 0
-        if not df_trust.empty and '證券代號' in df_trust.columns:
-            target_row = df_trust[df_trust['證券代號'] == raw_ticker]
+        if not df_trust.empty:
+            # 清理 B 欄 (索引1) 的證券代號
+            df_trust[1] = df_trust[1].astype(str).str.replace(r'[=" ]', '', regex=True)
+            target_row = df_trust[df_trust[1] == raw_ticker]
+            
             if not target_row.empty:
-                buy_col = '買賣超股數' if '買賣超股數' in df_trust.columns else df_trust.columns[-1]
-                net_t = round(int(target_row[buy_col].values[0].replace(',', '')) / 1000)
+                # F 欄 (索引5) 是買賣超股數
+                val_str = str(target_row.iloc[0, 5]).replace(',', '').strip()
+                try: net_t = round(int(val_str) / 1000)
+                except: pass
         trust_records.append({'日期': date_disp_str, '投信買賣超(張)': net_t})
         
     df_f_res = pd.DataFrame(foreign_records)
     df_t_res = pd.DataFrame(trust_records)
     
-    # 繪製外資長條圖 (紅買綠賣)
+    # 繪製外資長條圖
     fig_f = px.bar(df_f_res, x='日期', y='外資買賣超(張)', title='近10日外資買賣超狀況', text_auto=True)
     fig_f.update_traces(marker_color=['#FF4B4B' if val > 0 else '#00B050' for val in df_f_res['外資買賣超(張)']])
     fig_f.update_layout(margin=dict(l=20, r=20, t=40, b=20), height=300)
     
-    # 繪製投信長條圖 (紅買綠賣)
+    # 繪製投信長條圖
     fig_t = px.bar(df_t_res, x='日期', y='投信買賣超(張)', title='近10日投信買賣超狀況', text_auto=True)
     fig_t.update_traces(marker_color=['#FF4B4B' if val > 0 else '#00B050' for val in df_t_res['投信買賣超(張)']])
     fig_t.update_layout(margin=dict(l=20, r=20, t=40, b=20), height=300)
@@ -237,7 +239,6 @@ def render_tech_chart(hist_64, show_ma5, show_ma10, show_ma20, allow_zoom):
 # ==========================================
 # 🚀 系統主程式 (Main Program)
 # ==========================================
-# 修改 7：將主標題修改為「牧場小霸王」
 st.title("📊 牧場小霸王")
 st.markdown("支援 **技術K線均線**、**KD/MACD**、**分價量防守** 與 **近10日外資投信買賣超**")
 
@@ -331,7 +332,7 @@ if st.session_state.analyzed_input:
         for item in top_5_below: st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
 
     # ----------------------------------------------------
-    # 修改 1 & 5 & 6：背景獨立執行「近10日外資、投信買賣超狀況」
+    # 背景獨立執行「近10日外資、投信買賣超狀況」
     # ----------------------------------------------------
     st.divider()
     st.subheader("📈 近 10 日外資、投信買賣超狀況")
@@ -343,11 +344,9 @@ if st.session_state.analyzed_input:
     if is_otc:
         st.info("⚠️ 該股為上櫃股票，目前僅支援上市股票之三大法人籌碼查詢。")
     else:
-        with st.spinner("⏳ 正在向證交所存取/下載近 10 日市場法人數據 (今日查過的日期將秒速載入)，請稍候..."):
-            # 呼叫新的副程式，取得表格與繪圖物件
+        with st.spinner("⏳ 正在即時向證交所下載近 10 日 CSV 法人數據 (共20個檔案)，請稍候..."):
             df_foreign_export, df_trust_export, fig_f, fig_t = step6_extract_10day_institutional_data(raw_ticker, hist_64)
             
-        # 以兩欄並排方式，分別顯示外資與投信的圖表
         col_f, col_t = st.columns(2)
         with col_f:
             st.plotly_chart(fig_f, use_container_width=True)
@@ -355,7 +354,7 @@ if st.session_state.analyzed_input:
             st.plotly_chart(fig_t, use_container_width=True)
 
     # ----------------------------------------------------
-    # 結尾：Excel 報表匯出 (同步更新匯出格式)
+    # 結尾：Excel 報表匯出
     # ----------------------------------------------------
     st.divider()
     st.subheader("💾 匯出完整 Excel 報表")
@@ -368,7 +367,6 @@ if st.session_state.analyzed_input:
             df_sr_excel.to_excel(writer, sheet_name='區間分價量總表', index=False)
             df_top5_excel.to_excel(writer, sheet_name='關鍵支撐壓力', index=False)
             
-            # 若為上市股，將外資與投信近十日資料匯出
             if not df_foreign_export.empty: 
                 df_foreign_export.to_excel(writer, sheet_name='外資買賣超(10日)', index=False)
             if not df_trust_export.empty:
