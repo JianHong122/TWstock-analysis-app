@@ -356,15 +356,6 @@ if st.session_state.analyzed_input:
         st.write("**⬇️ 向下方支撐區**")
         for item in top_5_below: st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
 
-    st.subheader("🎯 關鍵支撐與壓力 (Top 5)")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("**⬆️ 向上方壓力區**")
-        for item in top_5_above: st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
-    with col2:
-        st.write("**⬇️ 向下方支撐區**")
-        for item in top_5_below: st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
-
     # 👇👇👇 從這裡開始插入新的 MA 落點分析 👇👇👇
     
     st.divider()
