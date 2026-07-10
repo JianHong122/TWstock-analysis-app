@@ -467,6 +467,7 @@ if st.session_state.analyzed_input:
             for ws in workbook.worksheets:
                 for col in range(1, ws.max_column + 1):
                     ws.column_dimensions[get_column_letter(col)].width = 25.5
+
             
             sheet1 = workbook['區間分價量總表']
             chart = BarChart()
