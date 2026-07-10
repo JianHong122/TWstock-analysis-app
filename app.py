@@ -342,20 +342,6 @@ if st.session_state.analyzed_input:
         fig_tech = render_tech_chart(hist_64, c1.checkbox("顯示 5MA", value=False), c2.checkbox("顯示 10MA", value=True), c3.checkbox("顯示 20MA", value=False), allow_zoom)
         st.plotly_chart(fig_tech, use_container_width=True)
 
-    st.subheader("📊 64日分價量參考圖")
-    fig_vol.update_xaxes(fixedrange=not allow_zoom)
-    fig_vol.update_yaxes(fixedrange=not allow_zoom)
-    st.plotly_chart(fig_vol, use_container_width=True)
-
-    st.subheader("🎯 關鍵支撐與壓力 (Top 5)")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("**⬆️ 向上方壓力區**")
-        for item in top_5_above: st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
-    with col2:
-        st.write("**⬇️ 向下方支撐區**")
-        for item in top_5_below: st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
-
     # 👇👇👇 從這裡開始插入新的 MA 落點分析 👇👇👇
     
     st.divider()
@@ -395,10 +381,22 @@ if st.session_state.analyzed_input:
             st.write(f"區間籌碼：**{int(target_bin['vol']):,}** 張")
 
     # 👆👆👆 插入結束 👆👆👆
+    
+    st.subheader("📊 64日分價量參考圖")
+    fig_vol.update_xaxes(fixedrange=not allow_zoom)
+    fig_vol.update_yaxes(fixedrange=not allow_zoom)
+    st.plotly_chart(fig_vol, use_container_width=True)
 
-   # ----------------------------------------------------
-    # 背景獨立執行「法人及融資券籌碼分析」
-    # ----------------------------------------------------
+    st.subheader("🎯 關鍵支撐與壓力 (Top 5)")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("**⬆️ 向上方壓力區**")
+        for item in top_5_above: st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
+    with col2:
+        st.write("**⬇️ 向下方支撐區**")
+        for item in top_5_below: st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
+
+    
    # ----------------------------------------------------
     # 背景獨立執行「法人及融資券籌碼分析」
     # ----------------------------------------------------
