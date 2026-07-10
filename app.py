@@ -699,7 +699,56 @@ if st.session_state.analyzed_input:
         for item in top_5_below: st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
 
 
+   st.subheader("🎯 關鍵支撐與壓力 (Top 5)")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("**⬆️ 向上方壓力區**")
+        for item in top_5_above: st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
+    with col2:
+        st.write("**⬇️ 向下方支撐區**")
+        for item in top_5_below: st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
 
+    # 👇👇👇 從這裡開始插入新的 MA 落點分析 👇👇👇
+    
+    st.divider()
+    st.subheader("📏 均線落點分價區間")
+    col_ma1, col_ma2, col_ma3 = st.columns(3)
+    
+    # 將三個 MA 的數值與對應的 UI 欄位綁定
+    ma_settings = [
+        (col_ma1, "5MA", latest['MA5']), 
+        (col_ma2, "10MA", latest['MA10']), 
+        (col_ma3, "20MA", latest['MA20'])
+    ]
+    
+    for col, ma_name, ma_val in ma_settings:
+        with col:
+            if pd.isna(ma_val):  # 防呆：如果上市天數不足，均線算不出數值
+                st.write(f"**{ma_name}**：無資料")
+                continue
+                
+            # 尋找該 MA 坐落的籌碼區間
+            target_bin = None
+            for b in all_intervals_disp:
+                if b['start'] <= ma_val <= b['end']:
+                    target_bin = b
+                    break
+                    
+            # 極端防呆：如果均線價格噴太高或跌太深，超出了目前 K 線畫出的 20 個區間
+            if not target_bin:
+                if ma_val > all_intervals_disp[0]['end']: 
+                    target_bin = all_intervals_disp[0]  # 代入最高區間
+                else: 
+                    target_bin = all_intervals_disp[-1] # 代入最低區間
+            
+            # 顯示結果
+            st.markdown(f"**{ma_name} ({ma_val:.2f})**")
+            st.write(f"落於區間：`{target_bin['label']}`")
+            st.write(f"區間籌碼：**{int(target_bin['vol']):,}** 張")
+
+    # 👆👆👆 插入結束 👆👆👆
+
+   
    # ----------------------------------------------------
 
     # 背景獨立執行「法人及融資券籌碼分析」
