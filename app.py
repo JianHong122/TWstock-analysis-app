@@ -427,20 +427,7 @@ if st.session_state.analyzed_input:
         with col_f: st.plotly_chart(fig_f, use_container_width=True)
         with col_t: st.plotly_chart(fig_t, use_container_width=True)
         
-        # 第二排：融資與融券 (乾淨表格與反轉日期)
-        if not df_margin_export.empty:
-            st.markdown("#### 📊 近 10 日信用交易明細 (張)")
-            col_m, col_s = st.columns(2)
-            
-            df_margin_reversed = df_margin_export.iloc[::-1].set_index('日期')
-            
-            with col_m:
-                st.write("**💰 融資狀況 (散戶做多指標)**")
-                st.dataframe(df_margin_reversed[['融資變動(張)', '融資餘額(張)']], use_container_width=True)
-            with col_s:
-                st.write("**📉 融券狀況 (散戶做空指標)**")
-                st.dataframe(df_margin_reversed[['融券變動(張)', '融券餘額(張)']], use_container_width=True)
-        
+                
         # 第二排：融資與融券 (改用乾淨表格呈現)
     if not df_margin_export.empty:
         st.markdown("#### 📊 近 10 日信用交易明細 (張)")
