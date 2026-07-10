@@ -19,7 +19,7 @@ if 'analyzed_input' not in st.session_state:
 if 'target_date' not in st.session_state:
     st.session_state.target_date = None
 
-st.set_page_config(page_title="台股籌碼分析工具", page_icon="📈", layout="centered")
+st.set_page_config(page_title="牧場小霸王", page_icon="📈", layout="centered")
 
 @st.cache_data
 def load_stock_list():
