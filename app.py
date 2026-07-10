@@ -411,6 +411,7 @@ if st.session_state.analyzed_input:
             else:
                 df_foreign_export, df_trust_export, df_margin_export, fig_f, fig_t = step6_extract_10day_institutional_data(raw_ticker, hist_64, debug=False)
             
+        # 🟢 關鍵檢查點：下面這段必須「退回一格縮排」，與上面的 with st.spinner 切齊！
         # UI 佈局：分兩排顯示
         # 第一排：外資與投信 (維持圖表)
         col_f, col_t = st.columns(2)
@@ -418,17 +419,20 @@ if st.session_state.analyzed_input:
         with col_t: st.plotly_chart(fig_t, use_container_width=True)
         
         # 第二排：融資與融券 (改用乾淨表格呈現)
-        if not df_margin_export.empty:
-            st.markdown("#### 📊 近 10 日信用交易明細 (張)")
-            col_m, col_s = st.columns(2)
-            
-            # 使用 set_index('日期') 可以讓表格最左邊沒有多餘的數字索引，版面更整齊
-            with col_m:
-                st.write("**💰 融資狀況 (散戶做多指標)**")
-                st.dataframe(df_margin_export[['日期', '融資變動(張)', '融資餘額(張)']].set_index('日期'), use_container_width=True)
-            with col_s:
-                st.write("**📉 融券狀況 (散戶做空指標)**")
-                st.dataframe(df_margin_export[['日期', '融券變動(張)', '融券餘額(張)']].set_index('日期'), use_container_width=True)
+    if not df_margin_export.empty:
+        st.markdown("#### 📊 近 10 日信用交易明細 (張)")
+        col_m, col_s = st.columns(2)
+        
+        # 🟢 核心修改：加上 .iloc[::-1] 將 DataFrame 順序上下翻轉
+        # 順便加上 .set_index('日期')，可以讓表格最左邊沒有多餘的數字索引，版面更整齊
+        df_margin_reversed = df_margin_export.iloc[::-1].set_index('日期')
+        
+        with col_m:
+            st.write("**💰 融資狀況 (散戶做多指標)**")
+            st.dataframe(df_margin_reversed[['融資變動(張)', '融資餘額(張)']], use_container_width=True)
+        with col_s:
+            st.write("**📉 融券狀況 (散戶做空指標)**")
+            st.dataframe(df_margin_reversed[['融券變動(張)', '融券餘額(張)']], use_container_width=True)
 
     # ----------------------------------------------------
     # 結尾：Excel 報表匯出
