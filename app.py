@@ -174,6 +174,29 @@ def fetch_twse_csv_data(date_str, inst_type):
             
     return pd.DataFrame()
 
+# 👇👇👇 請把這個不小心被刪掉的融資券函數補回來 👇👇👇
+def fetch_margin_json_data(date_str, raw_ticker):
+    """利用 exchangeReport API 下載融資券 JSON"""
+    url = f"https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&date={date_str}&selectType=ALL"
+    try:
+        res = requests.get(url, timeout=5).json()
+        if res.get('stat') == 'OK':
+            tables = res.get('tables', [])
+            if not tables and 'data' in res:
+                tables = [{'data': res['data']}]
+                
+            for table in tables:
+                for row in table.get('data', []):
+                    if str(row[0]).strip() == raw_ticker:
+                        m_prev = int(str(row[5]).replace(',', ''))
+                        m_today = int(str(row[6]).replace(',', ''))
+                        s_prev = int(str(row[11]).replace(',', ''))
+                        s_today = int(str(row[12]).replace(',', ''))
+                        return (m_today - m_prev), m_today, (s_today - s_prev), s_today
+    except: pass
+    return 0, 0, 0, 0
+# 👆👆👆 補貼結束 👆👆👆
+
 def step6_extract_10day_institutional_data(raw_ticker, hist_64):
     last_10_dates = hist_64.index[-10:]
     
