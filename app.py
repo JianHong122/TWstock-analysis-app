@@ -11,8 +11,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots 
 from openpyxl.chart import BarChart, Reference
 from openpyxl.utils import get_column_letter
-import os
-import pickle
 
 # ==========================================
 # 0. 初始化設定與共用函數
@@ -148,50 +146,6 @@ def step4_find_support_resistance(bins_data, current_price_round):
 # ==========================================
 # 副程式 5 & 6 相關：即時下載外資、投信 CSV 與 融資券 JSON
 # ==========================================
-# ==========================================
-# 快取輔助函數：處理實體檔案暫存
-# ==========================================
-def load_chip_cache(raw_ticker, end_date_str):
-    """讀取本地籌碼快取檔案"""
-    cache_dir = "chip_cache"
-    file_path = os.path.join(cache_dir, f"{raw_ticker}_{end_date_str}.pkl")
-    
-    if os.path.exists(file_path):
-        try:
-            with open(file_path, "rb") as f:
-                data = pickle.load(f)
-                
-                # 🛡️ 升級防護：確保讀出來的資料確實是 3 個 DataFrame 組成的 Tuple
-                # 如果格式不對（例如讀到舊版的 5 個物件），就假裝沒讀到，強制重新下載
-                if isinstance(data, tuple) and len(data) == 3:
-                    return data
-                else:
-                    return None 
-        except Exception:
-            st.error("Read cache error!!")  
-            return None
-    return None
-
-def save_chip_cache(raw_ticker, end_date_str, data):
-    """儲存籌碼快取檔案，並清除該股票的舊快取"""
-    cache_dir = "chip_cache"
-    if not os.path.exists(cache_dir):
-        os.makedirs(cache_dir)
-        
-    # 先清除該股票以前的舊快取檔案，避免硬碟爆滿
-    for f_name in os.listdir(cache_dir):
-        if f_name.startswith(f"{raw_ticker}_") and f_name.endswith(".pkl"):
-            try:
-                os.remove(os.path.join(cache_dir, f_name))
-            except: pass
-            
-    # 存入最新的檔案
-    file_path = os.path.join(cache_dir, f"{raw_ticker}_{end_date_str}.pkl")
-    try:
-        with open(file_path, "wb") as f:
-            pickle.dump(data, f)
-    except: pass
-
 def fetch_twse_csv_data(date_str, inst_type):
     url = f"https://www.twse.com.tw/rwd/zh/fund/{inst_type}?date={date_str}&response=csv"
     try:
@@ -223,6 +177,8 @@ def fetch_margin_json_data(date_str, raw_ticker):
     except: pass
     return 0, 0, 0, 0
 
+# 🟢 加上這行，Streamlit 就會自動幫我們做跨使用者的記憶體快取！
+@st.cache_data(show_spinner=False)
 def step6_extract_10day_institutional_data(raw_ticker, hist_64):
     last_10_dates = hist_64.index[-10:]
     
@@ -436,16 +392,17 @@ if st.session_state.analyzed_input:
         for item in top_5_below: st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
 
     
-   # ----------------------------------------------------
+    # ----------------------------------------------------
     # 背景獨立執行「法人及融資券籌碼分析」
     # ----------------------------------------------------
     st.divider()
     
-    # 🟢 佈局修改：加入「重新下載」按鈕
     c_title, c_btn = st.columns([4, 1])
     with c_title:
         st.subheader("📈 近 10 日市場籌碼動向 (外資 / 投信 / 融資券)")
     with c_btn:
+        # 加上 margin-top 讓按鈕對齊標題
+        st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
         force_refresh = st.button("🔄 重新下載", use_container_width=True)
         
     is_otc = yf_ticker.endswith('.TWO')
@@ -457,27 +414,19 @@ if st.session_state.analyzed_input:
     if is_otc:
         st.info("⚠️ 該股為上櫃股票，目前僅支援上市股票之三大法人與信用交易籌碼查詢。")
     else:
-        # 以目前 K線 的最後一天當作驗證日期的基準
+        # 取得最新日期作為快取的鑰匙
         latest_date_str = hist_64.index[-1].strftime('%Y%m%d')
-        cached_data = None
         
-        # 1. 判斷是否需要讀取快取 (若按下按鈕則跳過)
-        if not force_refresh:
-            cached_data = load_chip_cache(raw_ticker, latest_date_str)
+        # 🟢 如果按下重新下載，就呼叫內建指令「清空這個副程式的所有快取」
+        if force_refresh:
+            step6_extract_10day_institutional_data.clear()
             
-        # 2. 如果有快取，沿用！
-        if cached_data is not None:
-            st.caption("⚡ 已載入本地快取籌碼資料")
-            df_foreign_export, df_trust_export, df_margin_export = cached_data
-            
-        # 3. 如果沒快取 (或按下了重新下載)，重新下載！
-        else:
-            with st.spinner("⏳ 正在即時向證交所下載近 10 日籌碼數據，請稍候... (為防被鎖 IP 會稍微停頓)"):
-                df_foreign_export, df_trust_export, df_margin_export = step6_extract_10day_institutional_data(raw_ticker, hist_64)
-                # 下載完畢後，存入快取
-                save_chip_cache(raw_ticker, latest_date_str, (df_foreign_export, df_trust_export, df_margin_export))
-                
-        # --- 🟢 原本 step6 的畫圖邏輯移到這裡 ---
+        with st.spinner("⏳ 正在讀取近 10 日籌碼數據... (若無暫存則即時下載)"):
+            # 🟢 直接呼叫函數！
+            # Streamlit 會自動判斷：如果有快取就瞬間給資料；如果被清空或沒抓過，就會乖乖跑爬蟲
+            df_foreign_export, df_trust_export, df_margin_export = step6_extract_10day_institutional_data(raw_ticker, latest_date_str, hist_64)
+
+        # --- 畫圖與表格呈現 ---
         # 圖 1: 外資
         fig_f = px.bar(df_foreign_export, x='日期', y='外資買賣超(張)', title='近10日外資買賣超狀況', text_auto=True)
         fig_f.update_traces(marker_color=['#FF4B4B' if val > 0 else '#00B050' for val in df_foreign_export['外資買賣超(張)']])
@@ -488,13 +437,10 @@ if st.session_state.analyzed_input:
         fig_t.update_traces(marker_color=['#FF4B4B' if val > 0 else '#00B050' for val in df_trust_export['投信買賣超(張)']])
         fig_t.update_layout(margin=dict(l=20, r=20, t=40, b=20), height=300)
 
-        # UI 佈局：分兩排顯示
-        # 第一排：外資與投信 (維持圖表)
         col_f, col_t = st.columns(2)
         with col_f: st.plotly_chart(fig_f, use_container_width=True)
         with col_t: st.plotly_chart(fig_t, use_container_width=True)
         
-        # 第二排：融資與融券 (改用乾淨表格呈現)
         if not df_margin_export.empty:
             st.markdown("#### 📊 近 10 日信用交易明細 (張)")
             col_m, col_s = st.columns(2)
