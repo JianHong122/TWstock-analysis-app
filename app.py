@@ -159,9 +159,16 @@ def load_chip_cache(raw_ticker, end_date_str):
     if os.path.exists(file_path):
         try:
             with open(file_path, "rb") as f:
-                return pickle.load(f)
+                data = pickle.load(f)
+                
+                # 🛡️ 升級防護：確保讀出來的資料確實是 3 個 DataFrame 組成的 Tuple
+                # 如果格式不對（例如讀到舊版的 5 個物件），就假裝沒讀到，強制重新下載
+                if isinstance(data, tuple) and len(data) == 3:
+                    return data
+                else:
+                    return None 
         except Exception:
-            st.error("Read cache error!!")  # 👈 錯誤防護與客製化錯誤訊息
+            st.error("Read cache error!!")  
             return None
     return None
 
@@ -222,7 +229,8 @@ def step6_extract_10day_institutional_data(raw_ticker, hist_64):
     foreign_records = []
     trust_records = []
     margin_records = []
-    
+
+    # 迴圈開始
     for d in last_10_dates:
         date_api_str = d.strftime('%Y%m%d')
         date_disp_str = d.strftime('%m/%d')
@@ -262,13 +270,13 @@ def step6_extract_10day_institutional_data(raw_ticker, hist_64):
         })
         time.sleep(0.5) # 保留防擋延遲
         
-    # .... 前面爬蟲的部分維持原樣不動 ....
-        df_f_res = pd.DataFrame(foreign_records)
-        df_t_res = pd.DataFrame(trust_records)
-        df_m_res = pd.DataFrame(margin_records)
+    # ⚠️ 這裡非常重要！必須「向左退排」與 for 切齊，代表迴圈跑完 10 天後才執行
+    df_f_res = pd.DataFrame(foreign_records)
+    df_t_res = pd.DataFrame(trust_records)
+    df_m_res = pd.DataFrame(margin_records)
         
-        # 🟢 修改這裡：只回傳 DataFrame 就好，畫圖邏輯移到主程式
-        return df_f_res, df_t_res, df_m_res
+    # 🟢 只回傳 DataFrame (一樣與 for 切齊)
+    return df_f_res, df_t_res, df_m_res
 
 
 # ==========================================
@@ -434,7 +442,7 @@ if st.session_state.analyzed_input:
     st.divider()
     
     # 🟢 佈局修改：加入「重新下載」按鈕
-    c_title, c_btn = st.columns([4, 1], vertical_alignment="bottom")
+    c_title, c_btn = st.columns([4, 1])
     with c_title:
         st.subheader("📈 近 10 日市場籌碼動向 (外資 / 投信 / 融資券)")
     with c_btn:
