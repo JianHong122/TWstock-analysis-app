@@ -197,18 +197,21 @@ def fetch_margin_json_data(date_str, raw_ticker):
     return 0, 0, 0, 0
 # 👆👆👆 補貼結束 👆👆👆
 
-def step6_extract_10day_institutional_data(raw_ticker, hist_64):
+def step6_extract_institutional_data(raw_ticker, hist_64):
+    # 🟢 取得近 20 天與近 10 天的日期清單
+    last_20_dates = hist_64.index[-20:]
     last_10_dates = hist_64.index[-10:]
     
     foreign_records = []
     trust_records = []
     margin_records = []
     
-    for d in last_10_dates:
+    # 迴圈改為跑 20 天
+    for d in last_20_dates:
         date_api_str = d.strftime('%Y%m%d')
         date_disp_str = d.strftime('%m/%d')
         
-        # 1. 外資
+        # 1. 外資 (20天)
         df_foreign = fetch_twse_csv_data(date_api_str, "TWT38U")
         net_f = 0
         if not df_foreign.empty:
@@ -219,8 +222,7 @@ def step6_extract_10day_institutional_data(raw_ticker, hist_64):
                 except: pass
         foreign_records.append({'日期': date_disp_str, '外資買賣超(張)': net_f})
         
-        
-        # 2. 投信
+        # 2. 投信 (20天)
         df_trust = fetch_twse_csv_data(date_api_str, "TWT44U")
         net_t = 0
         if not df_trust.empty:
@@ -231,29 +233,28 @@ def step6_extract_10day_institutional_data(raw_ticker, hist_64):
                 except: pass
         trust_records.append({'日期': date_disp_str, '投信買賣超(張)': net_t})
         
-        
-        # 3. 融資券
-        m_change, m_today, s_change, s_today = fetch_margin_json_data(date_api_str, raw_ticker)
-        margin_records.append({
-            '日期': date_disp_str,
-            '融資變動(張)': m_change,
-            '融資餘額(張)': m_today,
-            '融券變動(張)': s_change,
-            '融券餘額(張)': s_today
-        })
-        time.sleep(0.5) # 保留防擋延遲
-        
+        # 3. 融資券 (🟢 加上 if 判斷，只有近 10 天才抓取，節省時間)
+        if d in last_10_dates:
+            m_change, m_today, s_change, s_today = fetch_margin_json_data(date_api_str, raw_ticker)
+            margin_records.append({
+                '日期': date_disp_str,
+                '融資變動(張)': m_change,
+                '融資餘額(張)': m_today,
+                '融券變動(張)': s_change,
+                '融券餘額(張)': s_today
+            })
+            time.sleep(0.5) # 融資券 JSON 沒有快取，所以保留防擋延遲
+            
     df_f_res = pd.DataFrame(foreign_records)
     df_t_res = pd.DataFrame(trust_records)
     df_m_res = pd.DataFrame(margin_records)
     
-    # 圖 1: 外資
-    fig_f = px.bar(df_f_res, x='日期', y='外資買賣超(張)', title='近10日外資買賣超狀況', text_auto=True)
+    # 🟢 繪圖標題更新為 20 日
+    fig_f = px.bar(df_f_res, x='日期', y='外資買賣超(張)', title='近20日外資買賣超狀況', text_auto=True)
     fig_f.update_traces(marker_color=['#FF4B4B' if val > 0 else '#00B050' for val in df_f_res['外資買賣超(張)']])
     fig_f.update_layout(margin=dict(l=20, r=20, t=40, b=20), height=300)
     
-    # 圖 2: 投信
-    fig_t = px.bar(df_t_res, x='日期', y='投信買賣超(張)', title='近10日投信買賣超狀況', text_auto=True)
+    fig_t = px.bar(df_t_res, x='日期', y='投信買賣超(張)', title='近20日投信買賣超狀況', text_auto=True)
     fig_t.update_traces(marker_color=['#FF4B4B' if val > 0 else '#00B050' for val in df_t_res['投信買賣超(張)']])
     fig_t.update_layout(margin=dict(l=20, r=20, t=40, b=20), height=300)
 
@@ -429,9 +430,15 @@ if st.session_state.analyzed_input:
     # ----------------------------------------------------
     st.divider()
     
-    # 移除 col_debug 與 checkbox，直接顯示標題
-    st.subheader("📈 近 10 日市場籌碼動向 (外資 / 投信 / 融資券)")
-        
+    c_title, c_btn = st.columns([4, 1])
+    with c_title:
+        st.subheader("📈 近期市場籌碼動向 (外資投信 20日 / 融資券 10日)")
+    with c_btn:
+        st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+        # 🟢 如果按下重新下載按鈕，直接清除記憶體中抓過的所有純文字快取
+        if st.button("🔄 重新下載快取", use_container_width=True):
+            download_twse_csv_text.clear()
+            
     is_otc = yf_ticker.endswith('.TWO')
     
     df_foreign_export = pd.DataFrame()
@@ -441,33 +448,29 @@ if st.session_state.analyzed_input:
     if is_otc:
         st.info("⚠️ 該股為上櫃股票，目前僅支援上市股票之三大法人與信用交易籌碼查詢。")
     else:
-        with st.spinner("⏳ 正在即時向證交所下載近 10 日籌碼數據，請稍候... (為防被鎖 IP 會稍微停頓)"):
+        with st.spinner("⏳ 正在即時向證交所調閱籌碼數據 (20日)，請稍候..."):
             
-            # 直接呼叫乾淨的函式，不再傳入 debug=True/False
-            df_foreign_export, df_trust_export, df_margin_export, fig_f, fig_t = step6_extract_10day_institutional_data(raw_ticker, hist_64)
+            # 🟢 呼叫剛剛改好的新函數名稱
+            df_foreign_export, df_trust_export, df_margin_export, fig_f, fig_t = step6_extract_institutional_data(raw_ticker, hist_64)
             
         # UI 佈局：分兩排顯示
-        # 第一排：外資與投信 (維持圖表)
         col_f, col_t = st.columns(2)
         with col_f: st.plotly_chart(fig_f, use_container_width=True)
         with col_t: st.plotly_chart(fig_t, use_container_width=True)
         
-                
-        # 第二排：融資與融券 (改用乾淨表格呈現)
-    if not df_margin_export.empty:
-        st.markdown("#### 📊 近 10 日信用交易明細 (張)")
-        col_m, col_s = st.columns(2)
-        
-        # 🟢 核心修改：加上 .iloc[::-1] 將 DataFrame 順序上下翻轉
-        # 順便加上 .set_index('日期')，可以讓表格最左邊沒有多餘的數字索引，版面更整齊
-        df_margin_reversed = df_margin_export.iloc[::-1].set_index('日期')
-        
-        with col_m:
-            st.write("**💰 融資狀況 (散戶做多指標)**")
-            st.dataframe(df_margin_reversed[['融資變動(張)', '融資餘額(張)']], use_container_width=True)
-        with col_s:
-            st.write("**📉 融券狀況 (散戶做空指標)**")
-            st.dataframe(df_margin_reversed[['融券變動(張)', '融券餘額(張)']], use_container_width=True)
+        # 第二排：融資與融券
+        if not df_margin_export.empty:
+            st.markdown("#### 📊 近 10 日信用交易明細 (張)")
+            col_m, col_s = st.columns(2)
+            
+            df_margin_reversed = df_margin_export.iloc[::-1].set_index('日期')
+            
+            with col_m:
+                st.write("**💰 融資狀況 (散戶做多指標)**")
+                st.dataframe(df_margin_reversed[['融資變動(張)', '融資餘額(張)']], use_container_width=True)
+            with col_s:
+                st.write("**📉 融券狀況 (散戶做空指標)**")
+                st.dataframe(df_margin_reversed[['融券變動(張)', '融券餘額(張)']], use_container_width=True)
 
     # ----------------------------------------------------
     # 結尾：Excel 報表匯出
@@ -484,9 +487,9 @@ if st.session_state.analyzed_input:
             df_top5_excel.to_excel(writer, sheet_name='關鍵支撐壓力', index=False)
             
             if not df_foreign_export.empty: 
-                df_foreign_export.to_excel(writer, sheet_name='外資買賣超(10日)', index=False)
+                df_foreign_export.to_excel(writer, sheet_name='外資買賣超(20日)', index=False)
             if not df_trust_export.empty:
-                df_trust_export.to_excel(writer, sheet_name='投信買賣超(10日)', index=False)
+                df_trust_export.to_excel(writer, sheet_name='投信買賣超(20日)', index=False)
             if not df_margin_export.empty:
                 df_margin_export.to_excel(writer, sheet_name='融資券狀況(10日)', index=False)
             
