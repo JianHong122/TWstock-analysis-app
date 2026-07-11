@@ -146,36 +146,33 @@ def step4_find_support_resistance(bins_data, current_price_round):
 # ==========================================
 # 副程式 5 & 6 相關：即時下載外資、投信 CSV 與 融資券 JSON
 # ==========================================
-def fetch_twse_csv_data(date_str, inst_type):
+# 👇 核心1：專門負責向證交所下載「純文字」，並用 Streamlit 內建功能快取 (保存1天)
+@st.cache_data(ttl=86400, show_spinner=False)
+def download_twse_csv_text(date_str, inst_type):
     url = f"https://www.twse.com.tw/rwd/zh/fund/{inst_type}?date={date_str}&response=csv"
+    time.sleep(1) # 👈 只有真正網路連線時才會觸發延遲，保護 IP
     try:
         res = requests.get(url, timeout=5)
-        res.encoding = 'big5' 
-        return pd.read_csv(io.StringIO(res.text), names=list(range(20)), on_bad_lines='skip')
+        res.encoding = 'big5'
+        # 簡單防呆：確保抓回來的文字長度大於 100 字元 (代表不是空網頁或錯誤代碼)
+        if len(res.text) > 100:
+            return res.text
+        return ""
     except:
-        return pd.DataFrame()
+        return ""
 
-
-def fetch_margin_json_data(date_str, raw_ticker):
-    """利用 exchangeReport API 下載融資券 JSON"""
-    url = f"https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&date={date_str}&selectType=ALL"
-    try:
-        res = requests.get(url, timeout=5).json()
-        if res.get('stat') == 'OK':
-            tables = res.get('tables', [])
-            if not tables and 'data' in res:
-                tables = [{'data': res['data']}]
-                
-            for table in tables:
-                for row in table.get('data', []):
-                    if str(row[0]).strip() == raw_ticker:
-                        m_prev = int(str(row[5]).replace(',', ''))
-                        m_today = int(str(row[6]).replace(',', ''))
-                        s_prev = int(str(row[11]).replace(',', ''))
-                        s_today = int(str(row[12]).replace(',', ''))
-                        return (m_today - m_prev), m_today, (s_today - s_prev), s_today
-    except: pass
-    return 0, 0, 0, 0
+# 👇 核心2：將純文字轉換成 DataFrame，這個動作極快，不需要快取
+def fetch_twse_csv_data(date_str, inst_type):
+    # 這裡呼叫上方函數，如果有快取，會瞬間回傳文字；沒快取才會去下載
+    csv_text = download_twse_csv_text(date_str, inst_type)
+    
+    if csv_text:
+        try:
+            return pd.read_csv(io.StringIO(csv_text), names=list(range(20)), on_bad_lines='skip')
+        except:
+            pass # 萬一解析失敗，直接放行，避免 App 崩潰
+            
+    return pd.DataFrame()
 
 def step6_extract_10day_institutional_data(raw_ticker, hist_64):
     last_10_dates = hist_64.index[-10:]
@@ -198,7 +195,7 @@ def step6_extract_10day_institutional_data(raw_ticker, hist_64):
                 try: net_f = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()) / 1000)
                 except: pass
         foreign_records.append({'日期': date_disp_str, '外資買賣超(張)': net_f})
-        time.sleep(0.5) # 保留防擋延遲
+        
         
         # 2. 投信
         df_trust = fetch_twse_csv_data(date_api_str, "TWT44U")
@@ -210,7 +207,7 @@ def step6_extract_10day_institutional_data(raw_ticker, hist_64):
                 try: net_t = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()) / 1000)
                 except: pass
         trust_records.append({'日期': date_disp_str, '投信買賣超(張)': net_t})
-        time.sleep(0.5) # 保留防擋延遲
+        
         
         # 3. 融資券
         m_change, m_today, s_change, s_today = fetch_margin_json_data(date_api_str, raw_ticker)
