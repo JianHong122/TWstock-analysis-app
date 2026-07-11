@@ -177,20 +177,20 @@ def fetch_margin_json_data(date_str, raw_ticker):
     except: pass
     return 0, 0, 0, 0
 
-# 🟢 加上這行，Streamlit 就會自動幫我們做跨使用者的記憶體快取！
+# ==========================================
+# 副程式 6：只負責純爬蟲與暫存 (不碰 DataFrame，完全避免底層崩潰)
+# ==========================================
 @st.cache_data(show_spinner=False)
-def step6_extract_10day_institutional_data(raw_ticker, hist_64):
-    last_10_dates = hist_64.index[-10:]
-    
+def fetch_10day_raw_data(raw_ticker, date_pairs):
+    """
+    接收純字串清單 date_pairs = [('20260701', '07/01'), ...]
+    回傳純字典清單。完全不傳遞或回傳 DataFrame，避開 PyArrow 序列化崩潰！
+    """
     foreign_records = []
     trust_records = []
     margin_records = []
-
-    # 迴圈開始
-    for d in last_10_dates:
-        date_api_str = d.strftime('%Y%m%d')
-        date_disp_str = d.strftime('%m/%d')
-        
+    
+    for date_api_str, date_disp_str in date_pairs:
         # 1. 外資
         df_foreign = fetch_twse_csv_data(date_api_str, "TWT38U")
         net_f = 0
@@ -213,7 +213,7 @@ def step6_extract_10day_institutional_data(raw_ticker, hist_64):
                 try: net_t = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()) / 1000)
                 except: pass
         trust_records.append({'日期': date_disp_str, '投信買賣超(張)': net_t})
-        time.sleep(0.5) # 保留防擋延遲
+        time.sleep(0.5)
         
         # 3. 融資券
         m_change, m_today, s_change, s_today = fetch_margin_json_data(date_api_str, raw_ticker)
@@ -224,15 +224,9 @@ def step6_extract_10day_institutional_data(raw_ticker, hist_64):
             '融券變動(張)': s_change,
             '融券餘額(張)': s_today
         })
-        time.sleep(0.5) # 保留防擋延遲
+        time.sleep(0.5)
         
-    # ⚠️ 這裡非常重要！必須「向左退排」與 for 切齊，代表迴圈跑完 10 天後才執行
-    df_f_res = pd.DataFrame(foreign_records)
-    df_t_res = pd.DataFrame(trust_records)
-    df_m_res = pd.DataFrame(margin_records)
-        
-    # 🟢 只回傳 DataFrame (一樣與 for 切齊)
-    return df_f_res, df_t_res, df_m_res
+    return foreign_records, trust_records, margin_records
 
 
 # ==========================================
@@ -401,7 +395,6 @@ if st.session_state.analyzed_input:
     with c_title:
         st.subheader("📈 近 10 日市場籌碼動向 (外資 / 投信 / 融資券)")
     with c_btn:
-        # 加上 margin-top 讓按鈕對齊標題
         st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
         force_refresh = st.button("🔄 重新下載", use_container_width=True)
         
@@ -414,25 +407,28 @@ if st.session_state.analyzed_input:
     if is_otc:
         st.info("⚠️ 該股為上櫃股票，目前僅支援上市股票之三大法人與信用交易籌碼查詢。")
     else:
-        # 取得最新日期作為快取的鑰匙
-        latest_date_str = hist_64.index[-1].strftime('%Y%m%d')
+        # 🟢 破解秘訣：將 DataFrame 裡面的日期抽出來，變成「純字串清單」
+        last_10_dates = hist_64.index[-10:]
+        date_pairs = [(d.strftime('%Y%m%d'), d.strftime('%m/%d')) for d in last_10_dates]
         
-        # 🟢 如果按下重新下載，就呼叫內建指令「清空這個副程式的所有快取」
+        # 處理重新下載按鈕
         if force_refresh:
-            step6_extract_10day_institutional_data.clear()
+            fetch_10day_raw_data.clear()
             
         with st.spinner("⏳ 正在讀取近 10 日籌碼數據... (若無暫存則即時下載)"):
-            # 🟢 直接呼叫函數！
-            # Streamlit 會自動判斷：如果有快取就瞬間給資料；如果被清空或沒抓過，就會乖乖跑爬蟲
-            df_foreign_export, df_trust_export, df_margin_export = step6_extract_10day_institutional_data(raw_ticker, latest_date_str, hist_64)
+            # 🟢 呼叫快取函數時，只傳入「純字串與清單」
+            f_records, t_records, m_records = fetch_10day_raw_data(raw_ticker, date_pairs)
+            
+            # 🟢 拿到純資料後，再把它們轉換成 DataFrame 供畫圖使用
+            df_foreign_export = pd.DataFrame(f_records)
+            df_trust_export = pd.DataFrame(t_records)
+            df_margin_export = pd.DataFrame(m_records)
 
-        # --- 畫圖與表格呈現 ---
-        # 圖 1: 外資
+        # --- 以下維持畫圖與表格呈現邏輯 ---
         fig_f = px.bar(df_foreign_export, x='日期', y='外資買賣超(張)', title='近10日外資買賣超狀況', text_auto=True)
         fig_f.update_traces(marker_color=['#FF4B4B' if val > 0 else '#00B050' for val in df_foreign_export['外資買賣超(張)']])
         fig_f.update_layout(margin=dict(l=20, r=20, t=40, b=20), height=300)
         
-        # 圖 2: 投信
         fig_t = px.bar(df_trust_export, x='日期', y='投信買賣超(張)', title='近10日投信買賣超狀況', text_auto=True)
         fig_t.update_traces(marker_color=['#FF4B4B' if val > 0 else '#00B050' for val in df_trust_export['投信買賣超(張)']])
         fig_t.update_layout(margin=dict(l=20, r=20, t=40, b=20), height=300)
