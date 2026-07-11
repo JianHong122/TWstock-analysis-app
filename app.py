@@ -11,6 +11,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots 
 from openpyxl.chart import BarChart, Reference
 from openpyxl.utils import get_column_letter
+import os
+import pickle
 
 # ==========================================
 # 0. 初始化設定與共用函數
@@ -146,6 +148,43 @@ def step4_find_support_resistance(bins_data, current_price_round):
 # ==========================================
 # 副程式 5 & 6 相關：即時下載外資、投信 CSV 與 融資券 JSON
 # ==========================================
+# ==========================================
+# 快取輔助函數：處理實體檔案暫存
+# ==========================================
+def load_chip_cache(raw_ticker, end_date_str):
+    """讀取本地籌碼快取檔案"""
+    cache_dir = "chip_cache"
+    file_path = os.path.join(cache_dir, f"{raw_ticker}_{end_date_str}.pkl")
+    
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            st.error("Read cache error!!")  # 👈 錯誤防護與客製化錯誤訊息
+            return None
+    return None
+
+def save_chip_cache(raw_ticker, end_date_str, data):
+    """儲存籌碼快取檔案，並清除該股票的舊快取"""
+    cache_dir = "chip_cache"
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir)
+        
+    # 先清除該股票以前的舊快取檔案，避免硬碟爆滿
+    for f_name in os.listdir(cache_dir):
+        if f_name.startswith(f"{raw_ticker}_") and f_name.endswith(".pkl"):
+            try:
+                os.remove(os.path.join(cache_dir, f_name))
+            except: pass
+            
+    # 存入最新的檔案
+    file_path = os.path.join(cache_dir, f"{raw_ticker}_{end_date_str}.pkl")
+    try:
+        with open(file_path, "wb") as f:
+            pickle.dump(data, f)
+    except: pass
+
 def fetch_twse_csv_data(date_str, inst_type):
     url = f"https://www.twse.com.tw/rwd/zh/fund/{inst_type}?date={date_str}&response=csv"
     try:
@@ -223,21 +262,13 @@ def step6_extract_10day_institutional_data(raw_ticker, hist_64):
         })
         time.sleep(0.5) # 保留防擋延遲
         
-    df_f_res = pd.DataFrame(foreign_records)
-    df_t_res = pd.DataFrame(trust_records)
-    df_m_res = pd.DataFrame(margin_records)
-    
-    # 圖 1: 外資
-    fig_f = px.bar(df_f_res, x='日期', y='外資買賣超(張)', title='近10日外資買賣超狀況', text_auto=True)
-    fig_f.update_traces(marker_color=['#FF4B4B' if val > 0 else '#00B050' for val in df_f_res['外資買賣超(張)']])
-    fig_f.update_layout(margin=dict(l=20, r=20, t=40, b=20), height=300)
-    
-    # 圖 2: 投信
-    fig_t = px.bar(df_t_res, x='日期', y='投信買賣超(張)', title='近10日投信買賣超狀況', text_auto=True)
-    fig_t.update_traces(marker_color=['#FF4B4B' if val > 0 else '#00B050' for val in df_t_res['投信買賣超(張)']])
-    fig_t.update_layout(margin=dict(l=20, r=20, t=40, b=20), height=300)
-
-    return df_f_res, df_t_res, df_m_res, fig_f, fig_t
+    # .... 前面爬蟲的部分維持原樣不動 ....
+        df_f_res = pd.DataFrame(foreign_records)
+        df_t_res = pd.DataFrame(trust_records)
+        df_m_res = pd.DataFrame(margin_records)
+        
+        # 🟢 修改這裡：只回傳 DataFrame 就好，畫圖邏輯移到主程式
+        return df_f_res, df_t_res, df_m_res
 
 
 # ==========================================
@@ -402,8 +433,12 @@ if st.session_state.analyzed_input:
     # ----------------------------------------------------
     st.divider()
     
-    # 移除 col_debug 與 checkbox，直接顯示標題
-    st.subheader("📈 近 10 日市場籌碼動向 (外資 / 投信 / 融資券)")
+    # 🟢 佈局修改：加入「重新下載」按鈕
+    c_title, c_btn = st.columns([4, 1], vertical_alignment="bottom")
+    with c_title:
+        st.subheader("📈 近 10 日市場籌碼動向 (外資 / 投信 / 融資券)")
+    with c_btn:
+        force_refresh = st.button("🔄 重新下載", use_container_width=True)
         
     is_otc = yf_ticker.endswith('.TWO')
     
@@ -414,33 +449,55 @@ if st.session_state.analyzed_input:
     if is_otc:
         st.info("⚠️ 該股為上櫃股票，目前僅支援上市股票之三大法人與信用交易籌碼查詢。")
     else:
-        with st.spinner("⏳ 正在即時向證交所下載近 10 日籌碼數據，請稍候... (為防被鎖 IP 會稍微停頓)"):
+        # 以目前 K線 的最後一天當作驗證日期的基準
+        latest_date_str = hist_64.index[-1].strftime('%Y%m%d')
+        cached_data = None
+        
+        # 1. 判斷是否需要讀取快取 (若按下按鈕則跳過)
+        if not force_refresh:
+            cached_data = load_chip_cache(raw_ticker, latest_date_str)
             
-            # 直接呼叫乾淨的函式，不再傳入 debug=True/False
-            df_foreign_export, df_trust_export, df_margin_export, fig_f, fig_t = step6_extract_10day_institutional_data(raw_ticker, hist_64)
+        # 2. 如果有快取，沿用！
+        if cached_data is not None:
+            st.caption("⚡ 已載入本地快取籌碼資料")
+            df_foreign_export, df_trust_export, df_margin_export = cached_data
             
+        # 3. 如果沒快取 (或按下了重新下載)，重新下載！
+        else:
+            with st.spinner("⏳ 正在即時向證交所下載近 10 日籌碼數據，請稍候... (為防被鎖 IP 會稍微停頓)"):
+                df_foreign_export, df_trust_export, df_margin_export = step6_extract_10day_institutional_data(raw_ticker, hist_64)
+                # 下載完畢後，存入快取
+                save_chip_cache(raw_ticker, latest_date_str, (df_foreign_export, df_trust_export, df_margin_export))
+                
+        # --- 🟢 原本 step6 的畫圖邏輯移到這裡 ---
+        # 圖 1: 外資
+        fig_f = px.bar(df_foreign_export, x='日期', y='外資買賣超(張)', title='近10日外資買賣超狀況', text_auto=True)
+        fig_f.update_traces(marker_color=['#FF4B4B' if val > 0 else '#00B050' for val in df_foreign_export['外資買賣超(張)']])
+        fig_f.update_layout(margin=dict(l=20, r=20, t=40, b=20), height=300)
+        
+        # 圖 2: 投信
+        fig_t = px.bar(df_trust_export, x='日期', y='投信買賣超(張)', title='近10日投信買賣超狀況', text_auto=True)
+        fig_t.update_traces(marker_color=['#FF4B4B' if val > 0 else '#00B050' for val in df_trust_export['投信買賣超(張)']])
+        fig_t.update_layout(margin=dict(l=20, r=20, t=40, b=20), height=300)
+
         # UI 佈局：分兩排顯示
         # 第一排：外資與投信 (維持圖表)
         col_f, col_t = st.columns(2)
         with col_f: st.plotly_chart(fig_f, use_container_width=True)
         with col_t: st.plotly_chart(fig_t, use_container_width=True)
         
-                
         # 第二排：融資與融券 (改用乾淨表格呈現)
-    if not df_margin_export.empty:
-        st.markdown("#### 📊 近 10 日信用交易明細 (張)")
-        col_m, col_s = st.columns(2)
-        
-        # 🟢 核心修改：加上 .iloc[::-1] 將 DataFrame 順序上下翻轉
-        # 順便加上 .set_index('日期')，可以讓表格最左邊沒有多餘的數字索引，版面更整齊
-        df_margin_reversed = df_margin_export.iloc[::-1].set_index('日期')
-        
-        with col_m:
-            st.write("**💰 融資狀況 (散戶做多指標)**")
-            st.dataframe(df_margin_reversed[['融資變動(張)', '融資餘額(張)']], use_container_width=True)
-        with col_s:
-            st.write("**📉 融券狀況 (散戶做空指標)**")
-            st.dataframe(df_margin_reversed[['融券變動(張)', '融券餘額(張)']], use_container_width=True)
+        if not df_margin_export.empty:
+            st.markdown("#### 📊 近 10 日信用交易明細 (張)")
+            col_m, col_s = st.columns(2)
+            df_margin_reversed = df_margin_export.iloc[::-1].set_index('日期')
+            
+            with col_m:
+                st.write("**💰 融資狀況 (散戶做多指標)**")
+                st.dataframe(df_margin_reversed[['融資變動(張)', '融資餘額(張)']], use_container_width=True)
+            with col_s:
+                st.write("**📉 融券狀況 (散戶做空指標)**")
+                st.dataframe(df_margin_reversed[['融券變動(張)', '融券餘額(張)']], use_container_width=True)
 
     # ----------------------------------------------------
     # 結尾：Excel 報表匯出
