@@ -296,7 +296,14 @@ if st.button("🚀 開始分析", use_container_width=True):
 if st.session_state.analyzed_input:
     current_target = st.session_state.analyzed_input
     
+    # 模糊搜尋：找出所有包含輸入字串的股票名稱
     matched_names = [name for name in name_to_ticker.keys() if current_target in name] if list_loaded else []
+    
+    # 👇👇👇 核心修正：完全命中攔截 👇👇👇
+    if len(matched_names) > 1 and current_target in matched_names:
+        matched_names = [current_target]  # 如果有完全一模一樣的，就只留下它
+    # 👆👆👆 核心修正結束 👆👆👆
+
     if len(matched_names) == 0:
         target_name = f"自訂代號 ({current_target})"
         auto_fallback = False if current_target.lower().endswith(('.tw', '.two')) else True
