@@ -181,7 +181,7 @@ def fetch_margin_json_data(date_str, raw_ticker):
     """利用 exchangeReport API 下載融資券 JSON"""
     url = f"https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&date={date_str}&selectType=ALL"
     try:
-        res = requests.get(url, timeout=5).json()
+        res = requests.get(url, timeout=5, verify=False).json()
         if res.get('stat') == 'OK':
             tables = res.get('tables', [])
             if not tables and 'data' in res:
@@ -210,7 +210,7 @@ def download_tpex_csv_text(date_str, inst_type):
     try:
         # 🟢 加上 verify=False，強行忽略憑證錯誤
         res = requests.get(url, timeout=5, verify=False)
-        res.encoding = 'utf-8' 
+        res.encoding = 'big5' 
         if len(res.text) > 100: 
             return res.text
     except: pass
@@ -236,7 +236,7 @@ def fetch_tpex_margin_json_data(roc_date_str, raw_ticker):
     """下載上櫃融資券 JSON (支援歷史日期查詢)"""
     url = f"https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&o=json&d={roc_date_str}"
     try:
-        res = requests.get(url, timeout=5).json()
+        res = requests.get(url, timeout=5, verify=False).json()
         for row in res.get('aaData', []):
             if str(row[0]).strip() == raw_ticker:
                 # 🟢 依照您的確認，完全比照上市的索引值 (5, 6, 11, 12)
@@ -589,7 +589,7 @@ if st.session_state.analyzed_input:
             st.write(f"👉 **融資券 JSON 第一筆資料** ({test_roc})")
             url_m = f"https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&o=json&d={test_roc}"
             try:
-                res_m = requests.get(url_m, timeout=5).json()
+                res_m = requests.get(url_m, timeout=5, verify=False).json()
                 if 'aaData' in res_m and len(res_m['aaData']) > 0:
                     st.write(res_m['aaData'][0]) # 展開第一筆陣列讓您數欄位
                 else:
