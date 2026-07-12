@@ -214,14 +214,14 @@ def fetch_margin_json_data(date_str, raw_ticker):
 # 👇 2. TPEx (上櫃) 專用下載函數
 @st.cache_data(ttl=86400, show_spinner=False)
 def download_tpex_csv_text(date_str, inst_type):
-    """下載上櫃法人 CSV，強制略過 SSL 檢查並使用 big5 解碼"""
+    """下載上櫃法人 CSV，強制略過 SSL 檢查並安全解碼"""
     url = f"https://www.tpex.org.tw/www/zh-tw/insti/{inst_type}?type=Daily&date={date_str}&searchType=buy&id=&response=csv"
     time.sleep(1) 
     try:
         res = requests.get(url, timeout=5, verify=False)
-        res.encoding = 'big5'
-        if len(res.text) > 100: 
-            return res.text
+        # 🟢 終極防禦：使用 cp950 解碼，並強行忽略無法解析的亂碼字元，徹底杜絕 PyArrow 崩潰
+        if len(res.content) > 100: 
+            return res.content.decode('cp950', errors='ignore')
     except: pass
     return ""
 
@@ -290,7 +290,7 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
             # ==========================================
             # 🟢 上櫃 (TPEx) 邏輯分支
             # ==========================================
-            date_tpex_csv_str = d.strftime('%Y%%2F%m%%2F%d')
+            date_tpex_csv_str = d.strftime('%Y/%m/%d')
             
             # 1. 上櫃外資 (20天)
             csv_f_text = download_tpex_csv_text(date_tpex_csv_str, "qfiiStat")
@@ -549,38 +549,37 @@ if st.session_state.analyzed_input:
             
     is_otc = yf_ticker.endswith('.TWO')
     
-    # ==========================================
-    # 🐛 Debug 模式專用顯示區塊
+   # ==========================================
+    # 🐛 Debug 模式專用顯示區塊 (安全版)
     # ==========================================
     if show_debug and is_otc:
-        st.warning("🔍 【Debug 模式】目前為上櫃股票，以下印出最新一天的原始資料，請從 0 開始數，確認目標在第幾個欄位 (Index)：")
+        st.warning("🔍 【Debug 模式】目前為上櫃股票，以下印出最新一天的原始純文字 (已關閉表格渲染以防止當機)：")
         test_d = hist_64.index[-1]
-        test_tpex_csv = test_d.strftime('%Y%%2F%m%%2F%d')
+        # 🟢 這裡也要改回正常的斜線
+        test_tpex_csv = test_d.strftime('%Y/%m/%d') 
         test_roc = f"{test_d.year - 1911}/{test_d.strftime('%m/%d')}"
         
         c_d1, c_d2 = st.columns(2)
         with c_d1:
-            st.write(f"👉 **外資 CSV 原始檔** ({test_tpex_csv})")
+            st.write(f"👉 **外資 CSV 原始文字檔前 500 字** ({test_tpex_csv})")
             f_txt = download_tpex_csv_text(test_tpex_csv, "qfiiStat")
             if f_txt:
-                df_debug = pd.read_csv(io.StringIO(f_txt), names=list(range(12)), on_bad_lines='skip')
-                st.dataframe(df_debug.head(10))
+                # 🟢 徹底避開 PyArrow，直接印出純文字，保證絕對不當機！
+                st.text(f_txt[:500])
             else:
                 st.error("無資料或連線失敗")
         with c_d2:
-            st.write(f"👉 **融資券 JSON 第一筆資料** ({test_roc})")
+            st.write(f"👉 **融資券 JSON 原始回傳** ({test_roc})")
             url_m = f"https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&o=json&d={test_roc}"
             try:
-                res_m = requests.get(url_m, timeout=5).json()
-                if 'aaData' in res_m and len(res_m['aaData']) > 0:
-                    st.write(res_m['aaData'][0]) # 展開第一筆陣列讓您數欄位
-                else:
-                    st.write("該日無 JSON 資料回傳")
+                # 🟢 加上 verify=False，並直接讀取純文字 text
+                res_raw = requests.get(url_m, timeout=5, verify=False).text
+                st.text(res_raw[:500])
             except Exception as e:
                 st.error(f"解析失敗: {e}")
         
         st.info("💡 檢查完畢後，請取消勾選 Debug 模式，即可恢復正常繪圖。")
-        st.stop() # 暫停主程式，不再往下畫圖，保持畫面乾淨
+        st.stop()
     # ==========================================
     
     with st.spinner("⏳ 正在即時向證交所/櫃買中心調閱籌碼數據，請稍候..."):
