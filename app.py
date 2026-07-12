@@ -266,24 +266,58 @@ def step6_extract_institutional_data(raw_ticker, hist_64):
 # ==========================================
 def render_tech_chart(hist_64, show_ma5, show_ma10, show_ma20, allow_zoom):
     date_strings = hist_64.index.strftime('%Y-%m-%d')
-    fig_k = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.5, 0.25, 0.25], subplot_titles=("價格與均線", "KD (9,3,3)", "MACD (12,26,9)"))
     
+    # 🟢 修改 1：將 rows 從 3 改為 4，並調整高度比例，新增「成交量」標題
+    fig_k = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03, 
+                          row_heights=[0.4, 0.2, 0.2, 0.2], 
+                          subplot_titles=("價格與均線", "KD (9,3,3)", "MACD (12,26,9)", "成交量與64日均量"))
+    
+    # --- Row 1: 價格與均線 ---
     fig_k.add_trace(go.Candlestick(x=date_strings, open=hist_64['Open'], high=hist_64['High'], low=hist_64['Low'], close=hist_64['Close'], name='K線', increasing_line_color='#FF4B4B', increasing_fillcolor='#FF4B4B', decreasing_line_color='#00B050', decreasing_fillcolor='#00B050'), row=1, col=1)
     if show_ma5: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA5'], name='5MA', line=dict(color='#7A431D', width=1.5)), row=1, col=1)
     if show_ma10: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA10'], name='10MA', line=dict(color='#00E5FF', width=1.5)), row=1, col=1)
     if show_ma20: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA20'], name='20MA', line=dict(color='#0D47A1', width=1.5)), row=1, col=1)
     
+    # --- Row 2: KD ---
     fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['K'], name='K值', line=dict(color='#FF9900', width=1.2)), row=2, col=1)
     fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['D'], name='D值', line=dict(color='#0066FF', width=1.2)), row=2, col=1)
     
+    # --- Row 3: MACD ---
     macd_colors = ['#FF4B4B' if val > 0 else '#00B050' for val in hist_64['OSC']]
     fig_k.add_trace(go.Bar(x=date_strings, y=hist_64['OSC'], name='OSC', marker_color=macd_colors), row=3, col=1)
     fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['DIF'], name='DIF', line=dict(color='#FF9900', width=1.2)), row=3, col=1)
     fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MACD'], name='MACD', line=dict(color='#0066FF', width=1.2)), row=3, col=1)
     
-    fig_k.update_layout(xaxis=dict(type='category', visible=False), xaxis2=dict(type='category', visible=False), xaxis3=dict(type='category', visible=True, title="交易日期", nticks=10), yaxis=dict(visible=False), yaxis2=dict(visible=True), yaxis3=dict(visible=True), xaxis_rangeslider_visible=False, margin=dict(l=4, r=4, t=30, b=4), height=700, hovermode='x unified', showlegend=False)
+    # --- Row 4: 成交量與 64 日均量 (🟢 新增區塊) ---
+    # 設定成交量柱狀圖顏色：收盤價 >= 開盤價 為紅柱，否則為綠柱
+    vol_colors = ['#FF4B4B' if row['Close'] >= row['Open'] else '#00B050' for idx, row in hist_64.iterrows()]
+    fig_k.add_trace(go.Bar(x=date_strings, y=hist_64['Volume'], name='成交量(張)', marker_color=vol_colors), row=4, col=1)
+    
+    # 計算 64 日均量 (hist_64 剛好就是 64 天，直接取平均即等於相加除以 64)
+    avg_vol = hist_64['Volume'].mean()
+    # 畫出水平虛線
+    fig_k.add_trace(go.Scatter(x=date_strings, y=[avg_vol]*len(hist_64), name=f'64日均量({int(avg_vol)}張)', mode='lines', line=dict(color='#FFD700', width=2, dash='dash')), row=4, col=1)
+    
+    # 🟢 修改 2：更新 Layout 設定，適應 4 個子圖
+    fig_k.update_layout(
+        xaxis=dict(type='category', visible=False), 
+        xaxis2=dict(type='category', visible=False), 
+        xaxis3=dict(type='category', visible=False), 
+        xaxis4=dict(type='category', visible=True, title="交易日期", nticks=10), # 將日期標籤移到最下方的 xaxis4
+        yaxis=dict(visible=False), 
+        yaxis2=dict(visible=True), 
+        yaxis3=dict(visible=True),
+        yaxis4=dict(visible=True), # 開啟第 4 個 Y 軸
+        xaxis_rangeslider_visible=False, 
+        margin=dict(l=4, r=4, t=30, b=4), 
+        height=850, # 🟢 高度從 700 增加到 850，讓新圖表有足夠空間顯示
+        hovermode='x unified', 
+        showlegend=False
+    )
+    
     fig_k.update_xaxes(fixedrange=not allow_zoom)
     fig_k.update_yaxes(fixedrange=not allow_zoom)
+    
     return fig_k
 
 
