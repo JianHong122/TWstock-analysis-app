@@ -225,23 +225,32 @@ def download_tpex_csv_text(date_str, inst_type):
     except: pass
     return ""
 
+# ==========================================
+# 🟢 修正 1：上櫃融資券解析函數 (對應最新 tables 結構)
+# ==========================================
 def fetch_tpex_margin_json_data(roc_date_str, raw_ticker):
-    """下載上櫃融資券 JSON，強制略過 SSL 檢查"""
+    """下載上櫃融資券 JSON，強制略過 SSL 檢查，並適應最新 tables 結構"""
     url = f"https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&o=json&d={roc_date_str}"
     try:
         res = requests.get(url, timeout=5, verify=False).json()
-        for row in res.get('aaData', []):
-            if str(row[0]).strip() == raw_ticker:
-                # 🟢 真相大白：依照 Debug 顯示的 fields，正確索引為 2, 6, 10, 14
-                m_prev = int(str(row[2]).replace(',', ''))
-                m_today = int(str(row[6]).replace(',', ''))
-                s_prev = int(str(row[10]).replace(',', ''))
-                s_today = int(str(row[14]).replace(',', ''))
-                return (m_today - m_prev), m_today, (s_today - s_prev), s_today
+        # 🟢 適應櫃買中心的新版結構 (與上市相同)
+        tables = res.get('tables', [])
+        for table in tables:
+            for row in table.get('data', []):
+                if str(row[0]).strip() == raw_ticker:
+                    # 依據您提供的 fields，正確索引為 2, 6, 10, 14
+                    m_prev = int(str(row[2]).replace(',', ''))
+                    m_today = int(str(row[6]).replace(',', ''))
+                    s_prev = int(str(row[10]).replace(',', ''))
+                    s_today = int(str(row[14]).replace(',', ''))
+                    return (m_today - m_prev), m_today, (s_today - s_prev), s_today
     except: pass
     return 0, 0, 0, 0
 
-# 👇 3. 核心迴圈：依據上市或上櫃進行資料分流
+
+# ==========================================
+# 🟢 修正 2：籌碼主迴圈 (加入內建的負數清洗器)
+# ==========================================
 def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
     last_20_dates = hist_64.index[-20:]
     last_10_dates = hist_64.index[-10:]
@@ -249,6 +258,11 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
     foreign_records = []
     trust_records = []
     margin_records = []
+    
+    # 🛡️ 超強過濾器：只保留數字與負號，完美拯救「賣超」資料！
+    def safe_parse_int(val_str):
+        cleaned = re.sub(r'[^\d\-]', '', str(val_str))
+        return int(cleaned) if cleaned and cleaned != '-' else 0
     
     for d in last_20_dates:
         date_disp_str = d.strftime('%m/%d')
@@ -266,8 +280,7 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
                 df_foreign[1] = df_foreign[1].astype(str).str.replace(r'[=" ]', '', regex=True)
                 target_row = df_foreign[df_foreign[1] == raw_ticker]
                 if not target_row.empty:
-                    try: net_f = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()) / 1000)
-                    except: pass
+                    net_f = round(safe_parse_int(target_row.iloc[0, 5]) / 1000) # 使用安全轉換
             foreign_records.append({'日期': date_disp_str, '外資買賣超(張)': net_f})
             
             # 2. 投信 (20天)
@@ -277,8 +290,7 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
                 df_trust[1] = df_trust[1].astype(str).str.replace(r'[=" ]', '', regex=True)
                 target_row = df_trust[df_trust[1] == raw_ticker]
                 if not target_row.empty:
-                    try: net_t = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()) / 1000)
-                    except: pass
+                    net_t = round(safe_parse_int(target_row.iloc[0, 5]) / 1000) # 使用安全轉換
             trust_records.append({'日期': date_disp_str, '投信買賣超(張)': net_t})
             
             # 3. 融資券 (10天)
@@ -298,13 +310,10 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
             net_f = 0
             if csv_f_text:
                 df_f = pd.read_csv(io.StringIO(csv_f_text), names=list(range(20)), on_bad_lines='skip')
-                # 🟢 修正 1：代號在 Index 1
                 df_f[1] = df_f[1].astype(str).str.replace(r'[=" ]', '', regex=True)
                 target_row = df_f[df_f[1] == raw_ticker]
                 if not target_row.empty:
-                    # 🟢 修正 2：買賣超在 Index 5，且櫃買已經是「張數」，所以【千萬不能 / 1000】
-                    try: net_f = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()))
-                    except: pass
+                    net_f = safe_parse_int(target_row.iloc[0, 5]) # 櫃買為張數，不除以 1000，使用安全轉換
             foreign_records.append({'日期': date_disp_str, '外資買賣超(張)': net_f})
             
             # 2. 上櫃投信 (20天)
@@ -312,16 +321,13 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
             net_t = 0
             if csv_t_text:
                 df_t = pd.read_csv(io.StringIO(csv_t_text), names=list(range(20)), on_bad_lines='skip')
-                # 🟢 修正 1：代號在 Index 1
                 df_t[1] = df_t[1].astype(str).str.replace(r'[=" ]', '', regex=True)
                 target_row = df_t[df_t[1] == raw_ticker]
                 if not target_row.empty:
-                    # 🟢 修正 2：買賣超在 Index 5，同樣移除 / 1000
-                    try: net_t = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()))
-                    except: pass
+                    net_t = safe_parse_int(target_row.iloc[0, 5]) # 櫃買為張數，不除以 1000，使用安全轉換
             trust_records.append({'日期': date_disp_str, '投信買賣超(張)': net_t})
             
-            # 3. 上櫃融資券 (10天) 維持不動
+            # 3. 上櫃融資券 (10天)
             if d in last_10_dates:
                 roc_date_str = f"{d.year - 1911}/{d.strftime('%m/%d')}"
                 m_change, m_today, s_change, s_today = fetch_tpex_margin_json_data(roc_date_str, raw_ticker)
