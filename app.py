@@ -46,7 +46,6 @@ def load_stock_list():
 # ==========================================
 # 副程式 1：抓取 YFinance 資料 (加入防擋偽裝機制)
 # ==========================================
-@st.cache_data(ttl=300, show_spinner=False)
 def step1_fetch_yf_data(ticker, raw_ticker, auto_fallback, target_date_str):
     end_dt = pd.to_datetime(target_date_str, format='%Y/%m/%d') + pd.Timedelta(days=1)
     start_dt = end_dt - pd.DateOffset(months=6) 
