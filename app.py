@@ -218,13 +218,12 @@ def fetch_tpex_margin_json_data(roc_date_str, raw_ticker):
     url = f"https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&o=json&d={roc_date_str}"
     try:
         res = requests.get(url, timeout=5).json()
-        # 櫃買中心資料通常放在 'aaData' 節點，並以陣列形式呈現
         for row in res.get('aaData', []):
             if str(row[0]).strip() == raw_ticker:
-                # 櫃買中心融資券欄位對應：2(融資前日), 6(融資今日), 8(融券前日), 12(融券今日)
-                m_prev = int(str(row[2]).replace(',', ''))
+                # 🟢 依照您的確認，完全比照上市的索引值 (5, 6, 11, 12)
+                m_prev = int(str(row[5]).replace(',', ''))
                 m_today = int(str(row[6]).replace(',', ''))
-                s_prev = int(str(row[8]).replace(',', ''))
+                s_prev = int(str(row[11]).replace(',', ''))
                 s_today = int(str(row[12]).replace(',', ''))
                 return (m_today - m_prev), m_today, (s_today - s_prev), s_today
     except: pass
@@ -281,7 +280,6 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
             # ==========================================
             # 🟢 上櫃 (TPEx) 邏輯分支
             # ==========================================
-            # 上櫃法人 API 需要的日期格式：2026%2F07%2F09
             date_tpex_csv_str = d.strftime('%Y%%2F%m%%2F%d')
             
             # 1. 上櫃外資 (20天)
@@ -289,11 +287,11 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
             net_f = 0
             if csv_f_text:
                 df_f = pd.read_csv(io.StringIO(csv_f_text), names=list(range(20)), on_bad_lines='skip')
-                df_f[0] = df_f[0].astype(str).str.replace(r'[=" ]', '', regex=True) # 櫃買股票代號在第 0 欄
-                target_row = df_f[df_f[0] == raw_ticker]
+                # 🟢 依照指示：B欄 (Index 1) 為代號，F欄 (Index 5) 為買賣超
+                df_f[1] = df_f[1].astype(str).str.replace(r'[=" ]', '', regex=True)
+                target_row = df_f[df_f[1] == raw_ticker]
                 if not target_row.empty:
-                    # 櫃買外資報表的買賣超通常在第 4 欄或第 5 欄
-                    try: net_f = round(int(str(target_row.iloc[0, 4]).replace(',', '').strip()) / 1000)
+                    try: net_f = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()) / 1000)
                     except: pass
             foreign_records.append({'日期': date_disp_str, '外資買賣超(張)': net_f})
             
@@ -302,16 +300,16 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
             net_t = 0
             if csv_t_text:
                 df_t = pd.read_csv(io.StringIO(csv_t_text), names=list(range(20)), on_bad_lines='skip')
-                df_t[0] = df_t[0].astype(str).str.replace(r'[=" ]', '', regex=True)
-                target_row = df_t[df_t[0] == raw_ticker]
+                # 🟢 同理修改為 Index 1 與 Index 5
+                df_t[1] = df_t[1].astype(str).str.replace(r'[=" ]', '', regex=True)
+                target_row = df_t[df_t[1] == raw_ticker]
                 if not target_row.empty:
-                    try: net_t = round(int(str(target_row.iloc[0, 4]).replace(',', '').strip()) / 1000)
+                    try: net_t = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()) / 1000)
                     except: pass
             trust_records.append({'日期': date_disp_str, '投信買賣超(張)': net_t})
             
-            # 3. 上櫃融資券 (10天)
+            # 3. 上櫃融資券 (10天) 維持不動
             if d in last_10_dates:
-                # 轉換為民國年格式 (例如：115/07/09)
                 roc_date_str = f"{d.year - 1911}/{d.strftime('%m/%d')}"
                 m_change, m_today, s_change, s_today = fetch_tpex_margin_json_data(roc_date_str, raw_ticker)
                 margin_records.append({'日期': date_disp_str, '融資變動(張)': m_change, '融資餘額(張)': m_today, '融券變動(張)': s_change, '融券餘額(張)': s_today})
@@ -536,21 +534,55 @@ if st.session_state.analyzed_input:
     # ----------------------------------------------------
     st.divider()
     
+    # 🐛 加入 Debug 模式開關
+    show_debug = st.checkbox("🐛 開啟爬蟲 Debug 模式 (用來檢視上櫃原始資料的欄位位置)")
+    
     c_title, c_btn = st.columns([4, 1])
     with c_title:
         st.subheader("📈 近期市場籌碼動向 (外資投信 20日 / 融資券 10日)")
     with c_btn:
         st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
         if st.button("🔄 重新下載快取", use_container_width=True):
-            # 🟢 新增：把上櫃的快取引擎也一併清除
             download_twse_csv_text.clear()
             download_tpex_csv_text.clear()
             
     is_otc = yf_ticker.endswith('.TWO')
     
-    # 🟢 移除原本阻擋上櫃的 if is_otc，直接執行
-    with st.spinner("⏳ 正在即時向證交所/櫃買中心調閱籌碼數據 (20日)，請稍候..."):
-        # 🟢 傳入 is_otc，讓副程式自行判斷要呼叫哪個 API
+    # ==========================================
+    # 🐛 Debug 模式專用顯示區塊
+    # ==========================================
+    if show_debug and is_otc:
+        st.warning("🔍 【Debug 模式】目前為上櫃股票，以下印出最新一天的原始資料，請從 0 開始數，確認目標在第幾個欄位 (Index)：")
+        test_d = hist_64.index[-1]
+        test_tpex_csv = test_d.strftime('%Y%%2F%m%%2F%d')
+        test_roc = f"{test_d.year - 1911}/{test_d.strftime('%m/%d')}"
+        
+        c_d1, c_d2 = st.columns(2)
+        with c_d1:
+            st.write(f"👉 **外資 CSV 原始檔** ({test_tpex_csv})")
+            f_txt = download_tpex_csv_text(test_tpex_csv, "qfiiStat")
+            if f_txt:
+                df_debug = pd.read_csv(io.StringIO(f_txt), names=list(range(12)), on_bad_lines='skip')
+                st.dataframe(df_debug.head(10))
+            else:
+                st.error("無資料或連線失敗")
+        with c_d2:
+            st.write(f"👉 **融資券 JSON 第一筆資料** ({test_roc})")
+            url_m = f"https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&o=json&d={test_roc}"
+            try:
+                res_m = requests.get(url_m, timeout=5).json()
+                if 'aaData' in res_m and len(res_m['aaData']) > 0:
+                    st.write(res_m['aaData'][0]) # 展開第一筆陣列讓您數欄位
+                else:
+                    st.write("該日無 JSON 資料回傳")
+            except Exception as e:
+                st.error(f"解析失敗: {e}")
+        
+        st.info("💡 檢查完畢後，請取消勾選 Debug 模式，即可恢復正常繪圖。")
+        st.stop() # 暫停主程式，不再往下畫圖，保持畫面乾淨
+    # ==========================================
+    
+    with st.spinner("⏳ 正在即時向證交所/櫃買中心調閱籌碼數據，請稍候..."):
         df_foreign_export, df_trust_export, df_margin_export, fig_f, fig_t = step6_extract_institutional_data(raw_ticker, hist_64, is_otc)
         
     # UI 佈局：分兩排顯示
