@@ -232,10 +232,11 @@ def fetch_tpex_margin_json_data(roc_date_str, raw_ticker):
         res = requests.get(url, timeout=5, verify=False).json()
         for row in res.get('aaData', []):
             if str(row[0]).strip() == raw_ticker:
-                m_prev = int(str(row[5]).replace(',', ''))
+                # 🟢 真相大白：依照 Debug 顯示的 fields，正確索引為 2, 6, 10, 14
+                m_prev = int(str(row[2]).replace(',', ''))
                 m_today = int(str(row[6]).replace(',', ''))
-                s_prev = int(str(row[11]).replace(',', ''))
-                s_today = int(str(row[12]).replace(',', ''))
+                s_prev = int(str(row[10]).replace(',', ''))
+                s_today = int(str(row[14]).replace(',', ''))
                 return (m_today - m_prev), m_today, (s_today - s_prev), s_today
     except: pass
     return 0, 0, 0, 0
@@ -297,10 +298,12 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
             net_f = 0
             if csv_f_text:
                 df_f = pd.read_csv(io.StringIO(csv_f_text), names=list(range(20)), on_bad_lines='skip')
-                df_f[0] = df_f[0].astype(str).str.replace(r'[=" ]', '', regex=True)
-                target_row = df_f[df_f[0] == raw_ticker]
+                # 🟢 修正 1：代號在 Index 1
+                df_f[1] = df_f[1].astype(str).str.replace(r'[=" ]', '', regex=True)
+                target_row = df_f[df_f[1] == raw_ticker]
                 if not target_row.empty:
-                    try: net_f = round(int(str(target_row.iloc[0, 4]).replace(',', '').strip()) / 1000)
+                    # 🟢 修正 2：買賣超在 Index 5，且櫃買已經是「張數」，所以【千萬不能 / 1000】
+                    try: net_f = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()))
                     except: pass
             foreign_records.append({'日期': date_disp_str, '外資買賣超(張)': net_f})
             
@@ -309,14 +312,16 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
             net_t = 0
             if csv_t_text:
                 df_t = pd.read_csv(io.StringIO(csv_t_text), names=list(range(20)), on_bad_lines='skip')
-                df_t[0] = df_t[0].astype(str).str.replace(r'[=" ]', '', regex=True)
-                target_row = df_t[df_t[0] == raw_ticker]
+                # 🟢 修正 1：代號在 Index 1
+                df_t[1] = df_t[1].astype(str).str.replace(r'[=" ]', '', regex=True)
+                target_row = df_t[df_t[1] == raw_ticker]
                 if not target_row.empty:
-                    try: net_t = round(int(str(target_row.iloc[0, 4]).replace(',', '').strip()) / 1000)
+                    # 🟢 修正 2：買賣超在 Index 5，同樣移除 / 1000
+                    try: net_t = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()))
                     except: pass
             trust_records.append({'日期': date_disp_str, '投信買賣超(張)': net_t})
             
-            # 3. 上櫃融資券 (10天)
+            # 3. 上櫃融資券 (10天) 維持不動
             if d in last_10_dates:
                 roc_date_str = f"{d.year - 1911}/{d.strftime('%m/%d')}"
                 m_change, m_today, s_change, s_today = fetch_tpex_margin_json_data(roc_date_str, raw_ticker)
