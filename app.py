@@ -211,15 +211,17 @@ def fetch_margin_json_data(date_str, raw_ticker):
     except: pass
     return 0, 0, 0, 0
 
-# 👇 2. TPEx (上櫃) 專用下載函數
+# ==========================================
+# TPEx (上櫃) 專用下載與解析函數 (終極防禦版 + 支援買賣雙向)
+# ==========================================
 @st.cache_data(ttl=86400, show_spinner=False)
-def download_tpex_csv_text(date_str, inst_type):
-    """下載上櫃法人 CSV，強制略過 SSL 檢查並安全解碼"""
-    url = f"https://www.tpex.org.tw/www/zh-tw/insti/{inst_type}?type=Daily&date={date_str}&searchType=buy&id=&response=csv"
+def download_tpex_csv_text(date_str, inst_type, search_type="buy"):
+    """下載上櫃法人 CSV，強制略過 SSL 檢查並安全解碼，支援 searchType 分流"""
+    # 🟢 網址加入 {search_type} 變數，動態抓取 buy 或 sell
+    url = f"https://www.tpex.org.tw/www/zh-tw/insti/{inst_type}?type=Daily&date={date_str}&searchType={search_type}&id=&response=csv"
     time.sleep(1) 
     try:
         res = requests.get(url, timeout=5, verify=False)
-        # 🟢 終極防禦：使用 cp950 解碼，並強行忽略無法解析的亂碼字元，徹底杜絕 PyArrow 崩潰
         if len(res.content) > 100: 
             return res.content.decode('cp950', errors='ignore')
     except: pass
@@ -315,34 +317,73 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
                 
         else:
             # ==========================================
-            # 🟢 上櫃 (TPEx) 邏輯分支
+            # 🟢 上櫃 (TPEx) 邏輯分支 (支援買賣超雙向查詢)
             # ==========================================
             date_tpex_csv_str = d.strftime('%Y/%m/%d')
             
-            # 1. 上櫃外資 (20天)
-            csv_f_text = download_tpex_csv_text(date_tpex_csv_str, "qfiiStat")
+            # ----------------------------------
+            # 1. 上櫃外資 (先查買超，沒有再查賣超)
+            # ----------------------------------
             net_f = 0
-            if csv_f_text:
-                df_f = pd.read_csv(io.StringIO(csv_f_text), names=list(range(20)), on_bad_lines='skip')
-                df_f[1] = df_f[1].astype(str).str.replace(r'[=" ]', '', regex=True)
-                target_row = df_f[df_f[1] == raw_ticker]
+            found_f = False
+            
+            # 先查 Buy 檔
+            csv_f_buy = download_tpex_csv_text(date_tpex_csv_str, "qfiiStat", "buy")
+            if csv_f_buy:
+                df_f_buy = pd.read_csv(io.StringIO(csv_f_buy), names=list(range(20)), on_bad_lines='skip')
+                df_f_buy[1] = df_f_buy[1].astype(str).str.replace(r'[=" ]', '', regex=True)
+                target_row = df_f_buy[df_f_buy[1] == raw_ticker]
                 if not target_row.empty:
-                    # 💡 注意：上櫃資料已是張數，因此不除以 1000
                     net_f = safe_parse_int(target_row.iloc[0, 5])
+                    found_f = True
+            
+            # 買超找不到，改查 Sell 檔
+            if not found_f:
+                csv_f_sell = download_tpex_csv_text(date_tpex_csv_str, "qfiiStat", "sell")
+                if csv_f_sell:
+                    df_f_sell = pd.read_csv(io.StringIO(csv_f_sell), names=list(range(20)), on_bad_lines='skip')
+                    df_f_sell[1] = df_f_sell[1].astype(str).str.replace(r'[=" ]', '', regex=True)
+                    target_row = df_f_sell[df_f_sell[1] == raw_ticker]
+                    if not target_row.empty:
+                        val = safe_parse_int(target_row.iloc[0, 5])
+                        # 🟢 確保賣超資料轉為負數 (無論原始表有無負號，強制取絕對值後掛負號)
+                        net_f = -abs(val)
+                        
             foreign_records.append({'日期': date_disp_str, '外資買賣超(張)': net_f})
             
-            # 2. 上櫃投信 (20天)
-            csv_t_text = download_tpex_csv_text(date_tpex_csv_str, "sitcStat")
+            # ----------------------------------
+            # 2. 上櫃投信 (先查買超，沒有再查賣超)
+            # ----------------------------------
             net_t = 0
-            if csv_t_text:
-                df_t = pd.read_csv(io.StringIO(csv_t_text), names=list(range(20)), on_bad_lines='skip')
-                df_t[1] = df_t[1].astype(str).str.replace(r'[=" ]', '', regex=True)
-                target_row = df_t[df_t[1] == raw_ticker]
+            found_t = False
+            
+            # 先查 Buy 檔
+            csv_t_buy = download_tpex_csv_text(date_tpex_csv_str, "sitcStat", "buy")
+            if csv_t_buy:
+                df_t_buy = pd.read_csv(io.StringIO(csv_t_buy), names=list(range(20)), on_bad_lines='skip')
+                df_t_buy[1] = df_t_buy[1].astype(str).str.replace(r'[=" ]', '', regex=True)
+                target_row = df_t_buy[df_t_buy[1] == raw_ticker]
                 if not target_row.empty:
                     net_t = safe_parse_int(target_row.iloc[0, 5])
+                    found_t = True
+                    
+            # 買超找不到，改查 Sell 檔
+            if not found_t:
+                csv_t_sell = download_tpex_csv_text(date_tpex_csv_str, "sitcStat", "sell")
+                if csv_t_sell:
+                    df_t_sell = pd.read_csv(io.StringIO(csv_t_sell), names=list(range(20)), on_bad_lines='skip')
+                    df_t_sell[1] = df_t_sell[1].astype(str).str.replace(r'[=" ]', '', regex=True)
+                    target_row = df_t_sell[df_t_sell[1] == raw_ticker]
+                    if not target_row.empty:
+                        val = safe_parse_int(target_row.iloc[0, 5])
+                        # 🟢 確保賣超資料轉為負數
+                        net_t = -abs(val)
+                        
             trust_records.append({'日期': date_disp_str, '投信買賣超(張)': net_t})
             
-            # 3. 上櫃融資券 (10天)
+            # ----------------------------------
+            # 3. 上櫃融資券 (10天) 維持不動
+            # ----------------------------------
             if d in last_10_dates:
                 roc_date_str = f"{d.year - 1911}/{d.strftime('%m/%d')}"
                 m_change, m_today, s_change, s_today = fetch_tpex_margin_json_data(roc_date_str, raw_ticker)
