@@ -11,6 +11,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots 
 from openpyxl.chart import BarChart, Reference
 from openpyxl.utils import get_column_letter
+import urllib3 # 👈 新增這個
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) # 👈 關閉煩人的 SSL 警告
 
 # ==========================================
 # 0. 初始化設定與共用函數
@@ -204,14 +206,31 @@ def fetch_margin_json_data(date_str, raw_ticker):
 def download_tpex_csv_text(date_str, inst_type):
     """下載上櫃法人 CSV，使用您找到的 qfiiStat / sitcStat API"""
     url = f"https://www.tpex.org.tw/www/zh-tw/insti/{inst_type}?type=Daily&date={date_str}&searchType=buy&id=&response=csv"
-    time.sleep(1) # 保護 IP 延遲
+    time.sleep(1) 
     try:
-        res = requests.get(url, timeout=5)
-        res.encoding = 'utf-8' # 櫃買中心已全面採用 utf-8
+        # 🟢 加上 verify=False，強行忽略憑證錯誤
+        res = requests.get(url, timeout=5, verify=False)
+        res.encoding = 'utf-8' 
         if len(res.text) > 100: 
             return res.text
     except: pass
     return ""
+
+def fetch_tpex_margin_json_data(roc_date_str, raw_ticker):
+    """下載上櫃融資券 JSON (支援歷史日期查詢)"""
+    url = f"https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&o=json&d={roc_date_str}"
+    try:
+        # 🟢 同樣加上 verify=False
+        res = requests.get(url, timeout=5, verify=False).json()
+        for row in res.get('aaData', []):
+            if str(row[0]).strip() == raw_ticker:
+                m_prev = int(str(row[5]).replace(',', ''))
+                m_today = int(str(row[6]).replace(',', ''))
+                s_prev = int(str(row[11]).replace(',', ''))
+                s_today = int(str(row[12]).replace(',', ''))
+                return (m_today - m_prev), m_today, (s_today - s_prev), s_today
+    except: pass
+    return 0, 0, 0, 0
 
 def fetch_tpex_margin_json_data(roc_date_str, raw_ticker):
     """下載上櫃融資券 JSON (支援歷史日期查詢)"""
