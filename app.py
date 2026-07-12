@@ -190,25 +190,38 @@ def fetch_twse_csv_data(date_str, inst_type):
         except: pass
     return pd.DataFrame()
 
-def fetch_margin_json_data(date_str, raw_ticker):
-    """利用 exchangeReport API 下載上市融資券 JSON"""
+# ==========================================
+# 🟢 升級版：上市 (TWSE) 融資券下載與解析 (支援快取)
+# ==========================================
+@st.cache_data(ttl=86400, show_spinner=False)
+def download_twse_margin_json(date_str):
+    """下載並快取上市融資券 JSON (全市場總表)"""
     url = f"https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&date={date_str}&selectType=ALL"
+    time.sleep(1) # 只有真正連網時才會觸發延遲，保護 IP
     try:
         res = requests.get(url, timeout=5).json()
         if res.get('stat') == 'OK':
-            tables = res.get('tables', [])
-            if not tables and 'data' in res:
-                tables = [{'data': res['data']}]
-                
-            for table in tables:
-                for row in table.get('data', []):
-                    if str(row[0]).strip() == raw_ticker:
-                        m_prev = int(str(row[5]).replace(',', ''))
-                        m_today = int(str(row[6]).replace(',', ''))
-                        s_prev = int(str(row[11]).replace(',', ''))
-                        s_today = int(str(row[12]).replace(',', ''))
-                        return (m_today - m_prev), m_today, (s_today - s_prev), s_today
+            return res
     except: pass
+    return {}
+
+def fetch_margin_json_data(date_str, raw_ticker):
+    """從快取的全市場資料中，撈出特定上市股票"""
+    res = download_twse_margin_json(date_str)
+    if not res: return 0, 0, 0, 0
+    
+    tables = res.get('tables', [])
+    if not tables and 'data' in res:
+        tables = [{'data': res['data']}]
+        
+    for table in tables:
+        for row in table.get('data', []):
+            if str(row[0]).strip() == raw_ticker:
+                m_prev = int(str(row[5]).replace(',', ''))
+                m_today = int(str(row[6]).replace(',', ''))
+                s_prev = int(str(row[11]).replace(',', ''))
+                s_today = int(str(row[12]).replace(',', ''))
+                return (m_today - m_prev), m_today, (s_today - s_prev), s_today
     return 0, 0, 0, 0
 
 # ==========================================
@@ -228,25 +241,34 @@ def download_tpex_csv_text(date_str, inst_type, search_type="buy"):
     return ""
 
 # ==========================================
-# 🟢 修正 1：上櫃融資券解析函數 (對應最新 tables 結構)
+# 🟢 升級版：上櫃 (TPEx) 融資券下載與解析 (支援快取)
 # ==========================================
-def fetch_tpex_margin_json_data(roc_date_str, raw_ticker):
-    """下載上櫃融資券 JSON，強制略過 SSL 檢查，並適應最新 tables 結構"""
+@st.cache_data(ttl=86400, show_spinner=False)
+def download_tpex_margin_json(roc_date_str):
+    """下載並快取上櫃融資券 JSON (全市場總表)"""
     url = f"https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&o=json&d={roc_date_str}"
+    time.sleep(1) # 只有真正連網時才會觸發延遲
     try:
-        res = requests.get(url, timeout=5, verify=False).json()
-        # 🟢 適應櫃買中心的新版結構 (與上市相同)
-        tables = res.get('tables', [])
-        for table in tables:
-            for row in table.get('data', []):
-                if str(row[0]).strip() == raw_ticker:
-                    # 依據您提供的 fields，正確索引為 2, 6, 10, 14
-                    m_prev = int(str(row[2]).replace(',', ''))
-                    m_today = int(str(row[6]).replace(',', ''))
-                    s_prev = int(str(row[10]).replace(',', ''))
-                    s_today = int(str(row[14]).replace(',', ''))
-                    return (m_today - m_prev), m_today, (s_today - s_prev), s_today
+        # 強制略過 SSL 檢查
+        return requests.get(url, timeout=5, verify=False).json()
     except: pass
+    return {}
+
+def fetch_tpex_margin_json_data(roc_date_str, raw_ticker):
+    """從快取的全市場資料中，撈出特定上櫃股票"""
+    res = download_tpex_margin_json(roc_date_str)
+    if not res: return 0, 0, 0, 0
+    
+    tables = res.get('tables', [])
+    for table in tables:
+        for row in table.get('data', []):
+            if str(row[0]).strip() == raw_ticker:
+                # 依據 fields 定位：前資(2)、資餘(6)、前券(10)、券餘(14)
+                m_prev = int(str(row[2]).replace(',', ''))
+                m_today = int(str(row[6]).replace(',', ''))
+                s_prev = int(str(row[10]).replace(',', ''))
+                s_today = int(str(row[14]).replace(',', ''))
+                return (m_today - m_prev), m_today, (s_today - s_prev), s_today
     return 0, 0, 0, 0
 
 
@@ -313,7 +335,6 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
             if d in last_10_dates:
                 m_change, m_today, s_change, s_today = fetch_margin_json_data(date_api_str, raw_ticker)
                 margin_records.append({'日期': date_disp_str, '融資變動(張)': m_change, '融資餘額(張)': m_today, '融券變動(張)': s_change, '融券餘額(張)': s_today})
-                time.sleep(0.5)
                 
         else:
             # ==========================================
@@ -612,6 +633,9 @@ if st.session_state.analyzed_input:
         if st.button("🔄 重新下載快取", use_container_width=True):
             download_twse_csv_text.clear()
             download_tpex_csv_text.clear()
+            # 🟢 補上清除融資券快取的指令
+            download_twse_margin_json.clear()
+            download_tpex_margin_json.clear()
             
     is_otc = yf_ticker.endswith('.TWO')
     
