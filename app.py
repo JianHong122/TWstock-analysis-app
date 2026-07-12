@@ -11,8 +11,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots 
 from openpyxl.chart import BarChart, Reference
 from openpyxl.utils import get_column_letter
-import urllib3 # 👈 新增這個
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) # 👈 關閉煩人的 SSL 警告
 
 # ==========================================
 # 0. 初始化設定與共用函數
@@ -181,7 +179,7 @@ def fetch_margin_json_data(date_str, raw_ticker):
     """利用 exchangeReport API 下載融資券 JSON"""
     url = f"https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&date={date_str}&selectType=ALL"
     try:
-        res = requests.get(url, timeout=5, verify=False).json()
+        res = requests.get(url, timeout=5).json()
         if res.get('stat') == 'OK':
             tables = res.get('tables', [])
             if not tables and 'data' in res:
@@ -199,58 +197,8 @@ def fetch_margin_json_data(date_str, raw_ticker):
     return 0, 0, 0, 0
 # 👆👆👆 補貼結束 👆👆👆
 
-# ==========================================
-# TPEx (上櫃) 專用下載與解析函數
-# ==========================================
-@st.cache_data(ttl=86400, show_spinner=False)
-def download_tpex_csv_text(date_str, inst_type):
-    """下載上櫃法人 CSV，使用您找到的 qfiiStat / sitcStat API"""
-    url = f"https://www.tpex.org.tw/www/zh-tw/insti/{inst_type}?type=Daily&date={date_str}&searchType=buy&id=&response=csv"
-    time.sleep(1) 
-    try:
-        # 🟢 加上 verify=False，強行忽略憑證錯誤
-        res = requests.get(url, timeout=5, verify=False)
-        res.encoding = 'big5' 
-        if len(res.text) > 100: 
-            return res.text
-    except: pass
-    return ""
-
-def fetch_tpex_margin_json_data(roc_date_str, raw_ticker):
-    """下載上櫃融資券 JSON (支援歷史日期查詢)"""
-    url = f"https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&o=json&d={roc_date_str}"
-    try:
-        # 🟢 同樣加上 verify=False
-        res = requests.get(url, timeout=5, verify=False).json()
-        for row in res.get('aaData', []):
-            if str(row[0]).strip() == raw_ticker:
-                m_prev = int(str(row[5]).replace(',', ''))
-                m_today = int(str(row[6]).replace(',', ''))
-                s_prev = int(str(row[11]).replace(',', ''))
-                s_today = int(str(row[12]).replace(',', ''))
-                return (m_today - m_prev), m_today, (s_today - s_prev), s_today
-    except: pass
-    return 0, 0, 0, 0
-
-def fetch_tpex_margin_json_data(roc_date_str, raw_ticker):
-    """下載上櫃融資券 JSON (支援歷史日期查詢)"""
-    url = f"https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&o=json&d={roc_date_str}"
-    try:
-        res = requests.get(url, timeout=5, verify=False).json()
-        for row in res.get('aaData', []):
-            if str(row[0]).strip() == raw_ticker:
-                # 🟢 依照您的確認，完全比照上市的索引值 (5, 6, 11, 12)
-                m_prev = int(str(row[5]).replace(',', ''))
-                m_today = int(str(row[6]).replace(',', ''))
-                s_prev = int(str(row[11]).replace(',', ''))
-                s_today = int(str(row[12]).replace(',', ''))
-                return (m_today - m_prev), m_today, (s_today - s_prev), s_today
-    except: pass
-    return 0, 0, 0, 0
-    
-
-# 🟢 函數多接收一個 is_otc 參數
-def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
+def step6_extract_institutional_data(raw_ticker, hist_64):
+    # 🟢 取得近 20 天與近 10 天的日期清單
     last_20_dates = hist_64.index[-20:]
     last_10_dates = hist_64.index[-10:]
     
@@ -258,87 +206,50 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
     trust_records = []
     margin_records = []
     
+    # 迴圈改為跑 20 天
     for d in last_20_dates:
+        date_api_str = d.strftime('%Y%m%d')
         date_disp_str = d.strftime('%m/%d')
         
-        if not is_otc:
-            # ==========================================
-            # 🟢 上市 (TWSE) 邏輯分支
-            # ==========================================
-            date_api_str = d.strftime('%Y%m%d')
+        # 1. 外資 (20天)
+        df_foreign = fetch_twse_csv_data(date_api_str, "TWT38U")
+        net_f = 0
+        if not df_foreign.empty:
+            df_foreign[1] = df_foreign[1].astype(str).str.replace(r'[=" ]', '', regex=True)
+            target_row = df_foreign[df_foreign[1] == raw_ticker]
+            if not target_row.empty:
+                try: net_f = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()) / 1000)
+                except: pass
+        foreign_records.append({'日期': date_disp_str, '外資買賣超(張)': net_f})
+        
+        # 2. 投信 (20天)
+        df_trust = fetch_twse_csv_data(date_api_str, "TWT44U")
+        net_t = 0
+        if not df_trust.empty:
+            df_trust[1] = df_trust[1].astype(str).str.replace(r'[=" ]', '', regex=True)
+            target_row = df_trust[df_trust[1] == raw_ticker]
+            if not target_row.empty:
+                try: net_t = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()) / 1000)
+                except: pass
+        trust_records.append({'日期': date_disp_str, '投信買賣超(張)': net_t})
+        
+        # 3. 融資券 (🟢 加上 if 判斷，只有近 10 天才抓取，節省時間)
+        if d in last_10_dates:
+            m_change, m_today, s_change, s_today = fetch_margin_json_data(date_api_str, raw_ticker)
+            margin_records.append({
+                '日期': date_disp_str,
+                '融資變動(張)': m_change,
+                '融資餘額(張)': m_today,
+                '融券變動(張)': s_change,
+                '融券餘額(張)': s_today
+            })
+            time.sleep(0.5) # 融資券 JSON 沒有快取，所以保留防擋延遲
             
-            # 1. 外資 (20天)
-            df_foreign = fetch_twse_csv_data(date_api_str, "TWT38U")
-            net_f = 0
-            if not df_foreign.empty:
-                df_foreign[1] = df_foreign[1].astype(str).str.replace(r'[=" ]', '', regex=True)
-                target_row = df_foreign[df_foreign[1] == raw_ticker]
-                if not target_row.empty:
-                    try: net_f = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()) / 1000)
-                    except: pass
-            foreign_records.append({'日期': date_disp_str, '外資買賣超(張)': net_f})
-            
-            # 2. 投信 (20天)
-            df_trust = fetch_twse_csv_data(date_api_str, "TWT44U")
-            net_t = 0
-            if not df_trust.empty:
-                df_trust[1] = df_trust[1].astype(str).str.replace(r'[=" ]', '', regex=True)
-                target_row = df_trust[df_trust[1] == raw_ticker]
-                if not target_row.empty:
-                    try: net_t = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()) / 1000)
-                    except: pass
-            trust_records.append({'日期': date_disp_str, '投信買賣超(張)': net_t})
-            
-            # 3. 融資券 (10天)
-            if d in last_10_dates:
-                m_change, m_today, s_change, s_today = fetch_margin_json_data(date_api_str, raw_ticker)
-                margin_records.append({'日期': date_disp_str, '融資變動(張)': m_change, '融資餘額(張)': m_today, '融券變動(張)': s_change, '融券餘額(張)': s_today})
-                time.sleep(0.5)
-                
-        else:
-            # ==========================================
-            # 🟢 上櫃 (TPEx) 邏輯分支
-            # ==========================================
-            date_tpex_csv_str = d.strftime('%Y%%2F%m%%2F%d')
-            
-            # 1. 上櫃外資 (20天)
-            csv_f_text = download_tpex_csv_text(date_tpex_csv_str, "qfiiStat")
-            net_f = 0
-            if csv_f_text:
-                df_f = pd.read_csv(io.StringIO(csv_f_text), names=list(range(20)), on_bad_lines='skip')
-                # 🟢 依照指示：B欄 (Index 1) 為代號，F欄 (Index 5) 為買賣超
-                df_f[1] = df_f[1].astype(str).str.replace(r'[=" ]', '', regex=True)
-                target_row = df_f[df_f[1] == raw_ticker]
-                if not target_row.empty:
-                    try: net_f = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()) / 1000)
-                    except: pass
-            foreign_records.append({'日期': date_disp_str, '外資買賣超(張)': net_f})
-            
-            # 2. 上櫃投信 (20天)
-            csv_t_text = download_tpex_csv_text(date_tpex_csv_str, "sitcStat")
-            net_t = 0
-            if csv_t_text:
-                df_t = pd.read_csv(io.StringIO(csv_t_text), names=list(range(20)), on_bad_lines='skip')
-                # 🟢 同理修改為 Index 1 與 Index 5
-                df_t[1] = df_t[1].astype(str).str.replace(r'[=" ]', '', regex=True)
-                target_row = df_t[df_t[1] == raw_ticker]
-                if not target_row.empty:
-                    try: net_t = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()) / 1000)
-                    except: pass
-            trust_records.append({'日期': date_disp_str, '投信買賣超(張)': net_t})
-            
-            # 3. 上櫃融資券 (10天) 維持不動
-            if d in last_10_dates:
-                roc_date_str = f"{d.year - 1911}/{d.strftime('%m/%d')}"
-                m_change, m_today, s_change, s_today = fetch_tpex_margin_json_data(roc_date_str, raw_ticker)
-                margin_records.append({'日期': date_disp_str, '融資變動(張)': m_change, '融資餘額(張)': m_today, '融券變動(張)': s_change, '融券餘額(張)': s_today})
-                time.sleep(0.5)
-
-    # --- 以下統一將資料打包成 DataFrame 並畫圖 ---
     df_f_res = pd.DataFrame(foreign_records)
     df_t_res = pd.DataFrame(trust_records)
     df_m_res = pd.DataFrame(margin_records)
     
+    # 🟢 繪圖標題更新為 20 日
     fig_f = px.bar(df_f_res, x='日期', y='外資買賣超(張)', title='近20日外資買賣超狀況', text_auto=True)
     fig_f.update_traces(marker_color=['#FF4B4B' if val > 0 else '#00B050' for val in df_f_res['外資買賣超(張)']])
     fig_f.update_layout(margin=dict(l=20, r=20, t=40, b=20), height=300)
@@ -355,58 +266,24 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
 # ==========================================
 def render_tech_chart(hist_64, show_ma5, show_ma10, show_ma20, allow_zoom):
     date_strings = hist_64.index.strftime('%Y-%m-%d')
+    fig_k = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.5, 0.25, 0.25], subplot_titles=("價格與均線", "KD (9,3,3)", "MACD (12,26,9)"))
     
-    # 🟢 修改 1：將 rows 從 3 改為 4，並調整高度比例，新增「成交量」標題
-    fig_k = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03, 
-                          row_heights=[0.4, 0.2, 0.2, 0.2], 
-                          subplot_titles=("價格與均線", "KD (9,3,3)", "MACD (12,26,9)", "成交量與64日均量"))
-    
-    # --- Row 1: 價格與均線 ---
     fig_k.add_trace(go.Candlestick(x=date_strings, open=hist_64['Open'], high=hist_64['High'], low=hist_64['Low'], close=hist_64['Close'], name='K線', increasing_line_color='#FF4B4B', increasing_fillcolor='#FF4B4B', decreasing_line_color='#00B050', decreasing_fillcolor='#00B050'), row=1, col=1)
     if show_ma5: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA5'], name='5MA', line=dict(color='#7A431D', width=1.5)), row=1, col=1)
     if show_ma10: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA10'], name='10MA', line=dict(color='#00E5FF', width=1.5)), row=1, col=1)
     if show_ma20: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA20'], name='20MA', line=dict(color='#0D47A1', width=1.5)), row=1, col=1)
     
-    # --- Row 2: KD ---
     fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['K'], name='K值', line=dict(color='#FF9900', width=1.2)), row=2, col=1)
     fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['D'], name='D值', line=dict(color='#0066FF', width=1.2)), row=2, col=1)
     
-    # --- Row 3: MACD ---
     macd_colors = ['#FF4B4B' if val > 0 else '#00B050' for val in hist_64['OSC']]
     fig_k.add_trace(go.Bar(x=date_strings, y=hist_64['OSC'], name='OSC', marker_color=macd_colors), row=3, col=1)
     fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['DIF'], name='DIF', line=dict(color='#FF9900', width=1.2)), row=3, col=1)
     fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MACD'], name='MACD', line=dict(color='#0066FF', width=1.2)), row=3, col=1)
     
-    # --- Row 4: 成交量與 64 日均量 (🟢 新增區塊) ---
-    # 設定成交量柱狀圖顏色：收盤價 >= 開盤價 為紅柱，否則為綠柱
-    vol_colors = ['#FF4B4B' if row['Close'] >= row['Open'] else '#00B050' for idx, row in hist_64.iterrows()]
-    fig_k.add_trace(go.Bar(x=date_strings, y=hist_64['Volume'], name='成交量(張)', marker_color=vol_colors), row=4, col=1)
-    
-    # 計算 64 日均量 (hist_64 剛好就是 64 天，直接取平均即等於相加除以 64)
-    avg_vol = hist_64['Volume'].mean()
-    # 畫出水平虛線
-    fig_k.add_trace(go.Scatter(x=date_strings, y=[avg_vol]*len(hist_64), name=f'64日均量({int(avg_vol)}張)', mode='lines', line=dict(color='#FFD700', width=2, dash='dash')), row=4, col=1)
-    
-    # 🟢 修改 2：更新 Layout 設定，適應 4 個子圖
-    fig_k.update_layout(
-        xaxis=dict(type='category', visible=False), 
-        xaxis2=dict(type='category', visible=False), 
-        xaxis3=dict(type='category', visible=False), 
-        xaxis4=dict(type='category', visible=True, title="交易日期", nticks=10), # 將日期標籤移到最下方的 xaxis4
-        yaxis=dict(visible=False), 
-        yaxis2=dict(visible=True), 
-        yaxis3=dict(visible=True),
-        yaxis4=dict(visible=True), # 開啟第 4 個 Y 軸
-        xaxis_rangeslider_visible=False, 
-        margin=dict(l=4, r=4, t=30, b=4), 
-        height=850, # 🟢 高度從 700 增加到 850，讓新圖表有足夠空間顯示
-        hovermode='x unified', 
-        showlegend=False
-    )
-    
+    fig_k.update_layout(xaxis=dict(type='category', visible=False), xaxis2=dict(type='category', visible=False), xaxis3=dict(type='category', visible=True, title="交易日期", nticks=10), yaxis=dict(visible=False), yaxis2=dict(visible=True), yaxis3=dict(visible=True), xaxis_rangeslider_visible=False, margin=dict(l=4, r=4, t=30, b=4), height=700, hovermode='x unified', showlegend=False)
     fig_k.update_xaxes(fixedrange=not allow_zoom)
     fig_k.update_yaxes(fixedrange=not allow_zoom)
-    
     return fig_k
 
 
@@ -553,75 +430,47 @@ if st.session_state.analyzed_input:
     # ----------------------------------------------------
     st.divider()
     
-    # 🐛 加入 Debug 模式開關
-    show_debug = st.checkbox("🐛 開啟爬蟲 Debug 模式 (用來檢視上櫃原始資料的欄位位置)")
-    
     c_title, c_btn = st.columns([4, 1])
     with c_title:
         st.subheader("📈 近期市場籌碼動向 (外資投信 20日 / 融資券 10日)")
     with c_btn:
         st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+        # 🟢 如果按下重新下載按鈕，直接清除記憶體中抓過的所有純文字快取
         if st.button("🔄 重新下載快取", use_container_width=True):
             download_twse_csv_text.clear()
-            download_tpex_csv_text.clear()
             
     is_otc = yf_ticker.endswith('.TWO')
     
-    # ==========================================
-    # 🐛 Debug 模式專用顯示區塊
-    # ==========================================
-    if show_debug and is_otc:
-        st.warning("🔍 【Debug 模式】目前為上櫃股票，以下印出最新一天的原始資料，請從 0 開始數，確認目標在第幾個欄位 (Index)：")
-        test_d = hist_64.index[-1]
-        test_tpex_csv = test_d.strftime('%Y%%2F%m%%2F%d')
-        test_roc = f"{test_d.year - 1911}/{test_d.strftime('%m/%d')}"
-        
-        c_d1, c_d2 = st.columns(2)
-        with c_d1:
-            st.write(f"👉 **外資 CSV 原始檔** ({test_tpex_csv})")
-            f_txt = download_tpex_csv_text(test_tpex_csv, "qfiiStat")
-            if f_txt:
-                df_debug = pd.read_csv(io.StringIO(f_txt), names=list(range(12)), on_bad_lines='skip')
-                st.dataframe(df_debug.head(10))
-            else:
-                st.error("無資料或連線失敗")
-        with c_d2:
-            st.write(f"👉 **融資券 JSON 第一筆資料** ({test_roc})")
-            url_m = f"https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&o=json&d={test_roc}"
-            try:
-                res_m = requests.get(url_m, timeout=5, verify=False).json()
-                if 'aaData' in res_m and len(res_m['aaData']) > 0:
-                    st.write(res_m['aaData'][0]) # 展開第一筆陣列讓您數欄位
-                else:
-                    st.write("該日無 JSON 資料回傳")
-            except Exception as e:
-                st.error(f"解析失敗: {e}")
-        
-        st.info("💡 檢查完畢後，請取消勾選 Debug 模式，即可恢復正常繪圖。")
-        st.stop() # 暫停主程式，不再往下畫圖，保持畫面乾淨
-    # ==========================================
+    df_foreign_export = pd.DataFrame()
+    df_trust_export = pd.DataFrame()
+    df_margin_export = pd.DataFrame()
     
-    with st.spinner("⏳ 正在即時向證交所/櫃買中心調閱籌碼數據，請稍候..."):
-        df_foreign_export, df_trust_export, df_margin_export, fig_f, fig_t = step6_extract_institutional_data(raw_ticker, hist_64, is_otc)
+    if is_otc:
+        st.info("⚠️ 該股為上櫃股票，目前僅支援上市股票之三大法人與信用交易籌碼查詢。")
+    else:
+        with st.spinner("⏳ 正在即時向證交所調閱籌碼數據 (20日)，請稍候..."):
+            
+            # 🟢 呼叫剛剛改好的新函數名稱
+            df_foreign_export, df_trust_export, df_margin_export, fig_f, fig_t = step6_extract_institutional_data(raw_ticker, hist_64)
+            
+        # UI 佈局：分兩排顯示
+        col_f, col_t = st.columns(2)
+        with col_f: st.plotly_chart(fig_f, use_container_width=True)
+        with col_t: st.plotly_chart(fig_t, use_container_width=True)
         
-    # UI 佈局：分兩排顯示
-    col_f, col_t = st.columns(2)
-    with col_f: st.plotly_chart(fig_f, use_container_width=True)
-    with col_t: st.plotly_chart(fig_t, use_container_width=True)
-    
-    # 第二排：融資與融券
-    if not df_margin_export.empty:
-        st.markdown("#### 📊 近 10 日信用交易明細 (張)")
-        col_m, col_s = st.columns(2)
-        
-        df_margin_reversed = df_margin_export.iloc[::-1].set_index('日期')
-        
-        with col_m:
-            st.write("**💰 融資狀況 (散戶做多指標)**")
-            st.dataframe(df_margin_reversed[['融資變動(張)', '融資餘額(張)']], use_container_width=True)
-        with col_s:
-            st.write("**📉 融券狀況 (散戶做空指標)**")
-            st.dataframe(df_margin_reversed[['融券變動(張)', '融券餘額(張)']], use_container_width=True)
+        # 第二排：融資與融券
+        if not df_margin_export.empty:
+            st.markdown("#### 📊 近 10 日信用交易明細 (張)")
+            col_m, col_s = st.columns(2)
+            
+            df_margin_reversed = df_margin_export.iloc[::-1].set_index('日期')
+            
+            with col_m:
+                st.write("**💰 融資狀況 (散戶做多指標)**")
+                st.dataframe(df_margin_reversed[['融資變動(張)', '融資餘額(張)']], use_container_width=True)
+            with col_s:
+                st.write("**📉 融券狀況 (散戶做空指標)**")
+                st.dataframe(df_margin_reversed[['融券變動(張)', '融券餘額(張)']], use_container_width=True)
 
     # ----------------------------------------------------
     # 結尾：Excel 報表匯出
