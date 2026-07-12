@@ -24,6 +24,17 @@ if 'target_date' not in st.session_state:
 
 st.set_page_config(page_title="牧場小霸王", page_icon="📈", layout="wide") # 調整為 wide 讓圖表更好看
 
+# 👇 1. 請把取得日期的函數放在這裡 (讓 Python 先認識它)
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_latest_trading_date():
+    """抓取台股大盤指數，自動避開假日與颱風天，取得最後真實交易日"""
+    try:
+        idx_data = yf.Ticker("^TWII").history(period="5d")
+        return idx_data.index[-1].strftime("%Y/%m/%d")
+    except:
+        return datetime.now().strftime("%Y/%m/%d")
+        
+# 👇 2. 這是原本讀取 Excel 的函數 (維持原樣)        
 @st.cache_data
 def load_stock_list():
     try:
