@@ -249,7 +249,7 @@ def fetch_tpex_margin_json_data(roc_date_str, raw_ticker):
 
 
 # ==========================================
-# 🟢 修正 2：籌碼主迴圈 (加入內建的負數清洗器)
+# 🟢 修正 2：籌碼主迴圈 (加入終極負數清洗器)
 # ==========================================
 def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
     last_20_dates = hist_64.index[-20:]
@@ -259,10 +259,24 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
     trust_records = []
     margin_records = []
     
-    # 🛡️ 超強過濾器：只保留數字與負號，完美拯救「賣超」資料！
+    # 🛡️ 終極過濾器：精準捕捉全形負號、括號、三角形等詭異負數格式
     def safe_parse_int(val_str):
-        cleaned = re.sub(r'[^\d\-]', '', str(val_str))
-        return int(cleaned) if cleaned and cleaned != '-' else 0
+        s = str(val_str).strip()
+        if not s: return 0
+        
+        # 1. 判斷是否為負數 (涵蓋全形/半形減號、括號、財報三角形)
+        is_negative = False
+        if s.startswith('-') or s.startswith('－') or s.startswith('−') or \
+           (s.startswith('(') and s.endswith(')')) or '△' in s or '▲' in s:
+            is_negative = True
+            
+        # 2. 暴力拔除所有非數字字元 (只留下純數字)
+        cleaned = re.sub(r'\D', '', s)
+        if not cleaned: return 0
+        
+        # 3. 轉為整數，若為負數則掛上負號
+        val = int(cleaned)
+        return -val if is_negative else val
     
     for d in last_20_dates:
         date_disp_str = d.strftime('%m/%d')
@@ -280,7 +294,7 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
                 df_foreign[1] = df_foreign[1].astype(str).str.replace(r'[=" ]', '', regex=True)
                 target_row = df_foreign[df_foreign[1] == raw_ticker]
                 if not target_row.empty:
-                    net_f = round(safe_parse_int(target_row.iloc[0, 5]) / 1000) # 使用安全轉換
+                    net_f = round(safe_parse_int(target_row.iloc[0, 5]) / 1000)
             foreign_records.append({'日期': date_disp_str, '外資買賣超(張)': net_f})
             
             # 2. 投信 (20天)
@@ -290,7 +304,7 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
                 df_trust[1] = df_trust[1].astype(str).str.replace(r'[=" ]', '', regex=True)
                 target_row = df_trust[df_trust[1] == raw_ticker]
                 if not target_row.empty:
-                    net_t = round(safe_parse_int(target_row.iloc[0, 5]) / 1000) # 使用安全轉換
+                    net_t = round(safe_parse_int(target_row.iloc[0, 5]) / 1000)
             trust_records.append({'日期': date_disp_str, '投信買賣超(張)': net_t})
             
             # 3. 融資券 (10天)
@@ -313,7 +327,8 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
                 df_f[1] = df_f[1].astype(str).str.replace(r'[=" ]', '', regex=True)
                 target_row = df_f[df_f[1] == raw_ticker]
                 if not target_row.empty:
-                    net_f = safe_parse_int(target_row.iloc[0, 5]) # 櫃買為張數，不除以 1000，使用安全轉換
+                    # 💡 注意：上櫃資料已是張數，因此不除以 1000
+                    net_f = safe_parse_int(target_row.iloc[0, 5])
             foreign_records.append({'日期': date_disp_str, '外資買賣超(張)': net_f})
             
             # 2. 上櫃投信 (20天)
@@ -324,7 +339,7 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
                 df_t[1] = df_t[1].astype(str).str.replace(r'[=" ]', '', regex=True)
                 target_row = df_t[df_t[1] == raw_ticker]
                 if not target_row.empty:
-                    net_t = safe_parse_int(target_row.iloc[0, 5]) # 櫃買為張數，不除以 1000，使用安全轉換
+                    net_t = safe_parse_int(target_row.iloc[0, 5])
             trust_records.append({'日期': date_disp_str, '投信買賣超(張)': net_t})
             
             # 3. 上櫃融資券 (10天)
@@ -348,7 +363,6 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
     fig_t.update_layout(margin=dict(l=20, r=20, t=40, b=20), height=300)
 
     return df_f_res, df_t_res, df_m_res, fig_f, fig_t
-
 # ==========================================
 # 介面繪製輔助函數 (Tech Chart)
 # ==========================================
