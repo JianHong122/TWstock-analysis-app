@@ -622,8 +622,9 @@ if st.session_state.analyzed_input:
     # ----------------------------------------------------
     st.divider()
     
-    # 🐛 加入 Debug 模式開關
-    show_debug = st.checkbox("🐛 開啟爬蟲 Debug 模式 (用來檢視上櫃原始資料的欄位位置)")
+    # 🐛 Debug 模式開關 (已從 UI 隱藏，未來若需使用，將下方兩行註解反轉即可)
+    # show_debug = st.checkbox("🐛 開啟爬蟲 Debug 模式 (用來檢視原始資料的欄位位置)")
+    show_debug = False  # 👈 強制設為 False，直接跳過 Debug 顯示區塊
     
     c_title, c_btn = st.columns([4, 1])
     with c_title:
