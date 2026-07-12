@@ -200,17 +200,15 @@ def fetch_margin_json_data(date_str, raw_ticker):
 # 👆👆👆 補貼結束 👆👆👆
 
 # ==========================================
-# TPEx (上櫃) 專用下載與解析函數
+# TPEx (上櫃) 專用下載與解析函數 (修正編碼)
 # ==========================================
 @st.cache_data(ttl=86400, show_spinner=False)
 def download_tpex_csv_text(date_str, inst_type):
-    """下載上櫃法人 CSV，使用您找到的 qfiiStat / sitcStat API"""
     url = f"https://www.tpex.org.tw/www/zh-tw/insti/{inst_type}?type=Daily&date={date_str}&searchType=buy&id=&response=csv"
     time.sleep(1) 
     try:
-        # 🟢 加上 verify=False，強行忽略憑證錯誤
         res = requests.get(url, timeout=5, verify=False)
-        res.encoding = 'utf-8' 
+        res.encoding = 'big5'  # 👈 修正 1：改為 big5 解決亂碼
         if len(res.text) > 100: 
             return res.text
     except: pass
@@ -224,22 +222,6 @@ def fetch_tpex_margin_json_data(roc_date_str, raw_ticker):
         res = requests.get(url, timeout=5, verify=False).json()
         for row in res.get('aaData', []):
             if str(row[0]).strip() == raw_ticker:
-                m_prev = int(str(row[5]).replace(',', ''))
-                m_today = int(str(row[6]).replace(',', ''))
-                s_prev = int(str(row[11]).replace(',', ''))
-                s_today = int(str(row[12]).replace(',', ''))
-                return (m_today - m_prev), m_today, (s_today - s_prev), s_today
-    except: pass
-    return 0, 0, 0, 0
-
-def fetch_tpex_margin_json_data(roc_date_str, raw_ticker):
-    """下載上櫃融資券 JSON (支援歷史日期查詢)"""
-    url = f"https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&o=json&d={roc_date_str}"
-    try:
-        res = requests.get(url, timeout=5).json()
-        for row in res.get('aaData', []):
-            if str(row[0]).strip() == raw_ticker:
-                # 🟢 依照您的確認，完全比照上市的索引值 (5, 6, 11, 12)
                 m_prev = int(str(row[5]).replace(',', ''))
                 m_today = int(str(row[6]).replace(',', ''))
                 s_prev = int(str(row[11]).replace(',', ''))
@@ -295,37 +277,20 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
                 margin_records.append({'日期': date_disp_str, '融資變動(張)': m_change, '融資餘額(張)': m_today, '融券變動(張)': s_change, '融券餘額(張)': s_today})
                 time.sleep(0.5)
                 
-        else:
-            # ==========================================
-            # 🟢 上櫃 (TPEx) 邏輯分支
-            # ==========================================
-            date_tpex_csv_str = d.strftime('%Y%%2F%m%%2F%d')
-            
-            # 1. 上櫃外資 (20天)
-            csv_f_text = download_tpex_csv_text(date_tpex_csv_str, "qfiiStat")
-            net_f = 0
-            if csv_f_text:
-                df_f = pd.read_csv(io.StringIO(csv_f_text), names=list(range(20)), on_bad_lines='skip')
-                # 🟢 依照指示：B欄 (Index 1) 為代號，F欄 (Index 5) 為買賣超
-                df_f[1] = df_f[1].astype(str).str.replace(r'[=" ]', '', regex=True)
-                target_row = df_f[df_f[1] == raw_ticker]
-                if not target_row.empty:
-                    try: net_f = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()) / 1000)
-                    except: pass
-            foreign_records.append({'日期': date_disp_str, '外資買賣超(張)': net_f})
-            
-            # 2. 上櫃投信 (20天)
-            csv_t_text = download_tpex_csv_text(date_tpex_csv_str, "sitcStat")
-            net_t = 0
-            if csv_t_text:
-                df_t = pd.read_csv(io.StringIO(csv_t_text), names=list(range(20)), on_bad_lines='skip')
-                # 🟢 同理修改為 Index 1 與 Index 5
-                df_t[1] = df_t[1].astype(str).str.replace(r'[=" ]', '', regex=True)
-                target_row = df_t[df_t[1] == raw_ticker]
-                if not target_row.empty:
-                    try: net_t = round(int(str(target_row.iloc[0, 5]).replace(',', '').strip()) / 1000)
-                    except: pass
-            trust_records.append({'日期': date_disp_str, '投信買賣超(張)': net_t})
+        # ==========================================
+# TPEx (上櫃) 專用下載與解析函數 (修正編碼)
+# ==========================================
+@st.cache_data(ttl=86400, show_spinner=False)
+def download_tpex_csv_text(date_str, inst_type):
+    url = f"https://www.tpex.org.tw/www/zh-tw/insti/{inst_type}?type=Daily&date={date_str}&searchType=buy&id=&response=csv"
+    time.sleep(1) 
+    try:
+        res = requests.get(url, timeout=5, verify=False)
+        res.encoding = 'big5'  # 👈 修正 1：改為 big5 解決亂碼
+        if len(res.text) > 100: 
+            return res.text
+    except: pass
+    return ""
             
             # 3. 上櫃融資券 (10天) 維持不動
             if d in last_10_dates:
@@ -421,7 +386,7 @@ if not list_loaded: st.warning("⚠️ 找不到 'TW50100.xlsx'，請直接輸�
 
 user_input = st.text_input("🔍 請輸入個股名稱或代號：", placeholder="例如: 台積電 或 2330")
 
-default_date = datetime.now().strftime("%Y/%m/%d")
+default_date = get_latest_trading_date()
 target_date_input = st.text_input("📅 請輸入查詢基準日 (西元年/月/日)：", value=default_date, placeholder="例如: 2024/01/01")
 
 if st.button("🚀 開始分析", use_container_width=True):
