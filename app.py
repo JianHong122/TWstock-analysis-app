@@ -44,7 +44,7 @@ def load_stock_list():
 
 
 # ==========================================
-# 副程式 1：抓取 YFinance 資料 (加入防擋偽裝與錯誤攔截機制)
+# 副程式 1：抓取 YFinance 資料 (加入防擋偽裝與假交易日過濾機制)
 # ==========================================
 def step1_fetch_yf_data(ticker, raw_ticker, auto_fallback, target_date_str):
     end_dt = pd.to_datetime(target_date_str, format='%Y/%m/%d') + pd.Timedelta(days=1)
@@ -53,7 +53,6 @@ def step1_fetch_yf_data(ticker, raw_ticker, auto_fallback, target_date_str):
     start_str = start_dt.strftime('%Y-%m-%d')
     end_str = end_dt.strftime('%Y-%m-%d')
 
-    # 建立自訂 Session，偽裝成一般的 Windows Chrome 瀏覽器
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -63,18 +62,24 @@ def step1_fetch_yf_data(ticker, raw_ticker, auto_fallback, target_date_str):
     
     # 🟢 第一層抓取 (預設抓上市 .TW)
     try:
-        hist = yf.Ticker(ticker, session=session).history(start=start_str, end=end_str)
+        temp_hist = yf.Ticker(ticker, session=session).history(start=start_str, end=end_str)
+        if not temp_hist.empty:
+            # 🛡️ 終極濾水器：把成交量為 0 的日子 (颱風天/未開盤假資料) 全部剃除！
+            hist = temp_hist[temp_hist['Volume'] > 0]
     except Exception:
-        pass # 如果發生 404 找不到或其他錯誤，直接略過，讓 hist 保持空值
+        pass 
 
     # 🟢 如果第一層沒抓到，且允許備用方案，啟動第二層抓取 (改抓上櫃 .TWO)
     if hist.empty and auto_fallback and raw_ticker:
         ticker_two = f"{raw_ticker}.TWO"
         try:
-            hist_two = yf.Ticker(ticker_two, session=session).history(start=start_str, end=end_str)
-            if not hist_two.empty:
-                hist = hist_two
-                ticker = ticker_two
+            temp_hist_two = yf.Ticker(ticker_two, session=session).history(start=start_str, end=end_str)
+            if not temp_hist_two.empty:
+                # 🛡️ 同樣套用零成交量過濾器
+                hist_two = temp_hist_two[temp_hist_two['Volume'] > 0]
+                if not hist_two.empty:
+                    hist = hist_two
+                    ticker = ticker_two
         except Exception:
             pass
 
