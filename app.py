@@ -4,15 +4,15 @@ import yfinance as yf
 import requests
 import io
 import re
-import time  # 👈 新增這個，用於防止爬蟲被鎖 IP
+import time
 from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go  
 from plotly.subplots import make_subplots 
 from openpyxl.chart import BarChart, Reference
 from openpyxl.utils import get_column_letter
-import urllib3 # 👈 新增這個
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) # 👈 關閉煩人的 SSL 警告
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==========================================
 # 0. 初始化設定與共用函數
@@ -22,9 +22,8 @@ if 'analyzed_input' not in st.session_state:
 if 'target_date' not in st.session_state:
     st.session_state.target_date = None
 
-st.set_page_config(page_title="牧場小霸王", page_icon="📈", layout="wide") # 調整為 wide 讓圖表更好看
+st.set_page_config(page_title="牧場小霸王", page_icon="📈", layout="wide")
 
-# 👇 1. 請把取得日期的函數放在這裡 (讓 Python 先認識它)
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_latest_trading_date():
     """抓取台股大盤指數，自動避開假日與颱風天，取得最後真實交易日"""
@@ -34,7 +33,6 @@ def get_latest_trading_date():
     except:
         return datetime.now().strftime("%Y/%m/%d")
         
-# 👇 2. 這是原本讀取 Excel 的函數 (維持原樣)        
 @st.cache_data
 def load_stock_list():
     try:
@@ -42,9 +40,8 @@ def load_stock_list():
         return {str(row[df.columns[1]]): str(row[df.columns[0]]).replace('.0', '') for _, row in df.iterrows()}, True
     except: return {}, False
 
-
 # ==========================================
-# 副程式 1：抓取 YFinance 資料 (加入防擋偽裝與假交易日過濾機制)
+# 副程式 1：抓取 YFinance 資料
 # ==========================================
 def step1_fetch_yf_data(ticker, raw_ticker, auto_fallback, target_date_str):
     end_dt = pd.to_datetime(target_date_str, format='%Y/%m/%d') + pd.Timedelta(days=1)
@@ -60,22 +57,18 @@ def step1_fetch_yf_data(ticker, raw_ticker, auto_fallback, target_date_str):
 
     hist = pd.DataFrame()
     
-    # 🟢 第一層抓取 (預設抓上市 .TW)
     try:
         temp_hist = yf.Ticker(ticker, session=session).history(start=start_str, end=end_str)
         if not temp_hist.empty:
-            # 🛡️ 終極濾水器：把成交量為 0 的日子 (颱風天/未開盤假資料) 全部剃除！
             hist = temp_hist[temp_hist['Volume'] > 0]
     except Exception:
         pass 
 
-    # 🟢 如果第一層沒抓到，且允許備用方案，啟動第二層抓取 (改抓上櫃 .TWO)
     if hist.empty and auto_fallback and raw_ticker:
         ticker_two = f"{raw_ticker}.TWO"
         try:
             temp_hist_two = yf.Ticker(ticker_two, session=session).history(start=start_str, end=end_str)
             if not temp_hist_two.empty:
-                # 🛡️ 同樣套用零成交量過濾器
                 hist_two = temp_hist_two[temp_hist_two['Volume'] > 0]
                 if not hist_two.empty:
                     hist = hist_two
@@ -85,12 +78,13 @@ def step1_fetch_yf_data(ticker, raw_ticker, auto_fallback, target_date_str):
 
     return hist, ticker
 
-
 # ==========================================
-# 副程式 2：產生 K線、均線、KD、MACD
+# 副程式 2：產生 K線、均線、KD、MACD 與 一目均衡表
 # ==========================================
 def step2_calc_tech_indicators(hist):
     df = hist.copy()
+    
+    # --- 基本指標 ---
     df['MA5'] = df['Close'].rolling(window=5).mean()
     df['MA10'] = df['Close'].rolling(window=10).mean()
     df['MA20'] = df['Close'].rolling(window=20).mean()
@@ -107,15 +101,47 @@ def step2_calc_tech_indicators(hist):
     df['MACD'] = df['DIF'].ewm(span=9, adjust=False).mean()
     df['OSC'] = (df['DIF'] - df['MACD']) * 2 
     df['Volume'] = df['Volume'] / 1000  
-    return df.tail(64)
+    
+    # --- ☁️ 一目均衡表 (Ichimoku Kinko Hyo) 計算 ---
+    high_9 = df['High'].rolling(window=9).max()
+    low_9 = df['Low'].rolling(window=9).min()
+    df['Tenkan'] = (high_9 + low_9) / 2  # 轉換線(9)
 
+    high_26 = df['High'].rolling(window=26).max()
+    low_26 = df['Low'].rolling(window=26).min()
+    df['Kijun'] = (high_26 + low_26) / 2 # 基準線(26)
+
+    high_52 = df['High'].rolling(window=52).max()
+    low_52 = df['Low'].rolling(window=52).min()
+    
+    senkou_a_unaligned = (df['Tenkan'] + df['Kijun']) / 2 # 尚未平移的 A
+    senkou_b_unaligned = (high_52 + low_52) / 2           # 尚未平移的 B
+    df['Chikou'] = df['Close'].shift(-26)                 # 遲行跨度 (收盤價退回26天)
+
+    # --- 🌟 魔法時刻：製造未來 26 個營業日 ---
+    if not df.empty:
+        last_date = df.index[-1]
+        future_dates = pd.bdate_range(start=last_date + pd.Timedelta(days=1), periods=26)
+        future_df = pd.DataFrame(index=future_dates)
+        
+        # 縫合歷史與未來
+        df_extended = pd.concat([df, future_df])
+        
+        # 將雲帶 A, B 往未來平移 26 天，剛好填滿未來的空殼
+        df_extended['Senkou_A'] = senkou_a_unaligned.reindex(df_extended.index).shift(26)
+        df_extended['Senkou_B'] = senkou_b_unaligned.reindex(df_extended.index).shift(26)
+    else:
+        df_extended = df
+
+    # 回傳：64天歷史 + 26天未來 (共 90 天)
+    return df_extended.tail(90)
 
 # ==========================================
 # 副程式 3：產生分價量統計與圖表
 # ==========================================
-def step3_process_volume_profile(hist_64):
-    current_price_round = round(hist_64['Close'].dropna().iloc[-1], 2)
-    max_price, min_price = hist_64['High'].max(), hist_64['Low'].min()
+def step3_process_volume_profile(valid_hist_64):
+    current_price_round = round(valid_hist_64['Close'].dropna().iloc[-1], 2)
+    max_price, min_price = valid_hist_64['High'].max(), valid_hist_64['Low'].min()
     if max_price == min_price:
         max_price, min_price = min_price * 1.05, min_price * 0.95
     
@@ -125,7 +151,7 @@ def step3_process_volume_profile(hist_64):
     bins_data = [{'idx': i, 'start': min_price + i * bin_size, 'end': min_price + (i + 1) * bin_size, 'mid': (min_price + i * bin_size + min_price + (i + 1) * bin_size) / 2, 'label': f"{min_price + i * bin_size:.2f} ~ {min_price + (i + 1) * bin_size:.2f}", 'disp_label': f"{'** ' if i == curr_bin_idx else ''}{min_price + i * bin_size:.2f} ~ {min_price + (i + 1) * bin_size:.2f}", 'is_current': (i == curr_bin_idx), 'vol': 0} for i in range(20)]
     
     all_price_vols = []
-    for _, row in hist_64.iterrows():
+    for _, row in valid_hist_64.iterrows():
         o, h, l, c, v = round(row['Open'], 2), round(row['High'], 2), round(row['Low'], 2), round(row['Close'], 2), row['Volume']
         if l > h: l, h = h, l 
         vol_open, vol_close, vol_dist_total = v * 0.05, v * 0.30, v * 0.65
@@ -159,7 +185,6 @@ def step3_process_volume_profile(hist_64):
     
     return bins_data, all_intervals_disp, fig_vol, current_price_round
 
-
 # ==========================================
 # 副程式 4：關鍵分價量支撐
 # ==========================================
@@ -168,12 +193,9 @@ def step4_find_support_resistance(bins_data, current_price_round):
     top_5_below = sorted(sorted([b for b in bins_data if b['mid'] < current_price_round and b['vol'] > 0], key=lambda x: x['vol'], reverse=True)[:5], key=lambda x: x['start'], reverse=True)
     return top_5_above, top_5_below
 
-
 # ==========================================
 # 副程式 5 & 6 相關：即時下載外資、投信 CSV 與 融資券 JSON
 # ==========================================
-
-# 👇 1. TWSE (上市) 專用下載函數
 @st.cache_data(ttl=86400, show_spinner=False)
 def download_twse_csv_text(date_str, inst_type):
     url = f"https://www.twse.com.tw/rwd/zh/fund/{inst_type}?date={date_str}&response=csv"
@@ -195,14 +217,10 @@ def fetch_twse_csv_data(date_str, inst_type):
         except: pass
     return pd.DataFrame()
 
-# ==========================================
-# 🟢 升級版：上市 (TWSE) 融資券下載與解析 (支援快取)
-# ==========================================
 @st.cache_data(ttl=86400, show_spinner=False)
 def download_twse_margin_json(date_str):
-    """下載並快取上市融資券 JSON (全市場總表)"""
     url = f"https://www.twse.com.tw/exchangeReport/MI_MARGN?response=json&date={date_str}&selectType=ALL"
-    time.sleep(1) # 只有真正連網時才會觸發延遲，保護 IP
+    time.sleep(1) 
     try:
         res = requests.get(url, timeout=5).json()
         if res.get('stat') == 'OK':
@@ -211,7 +229,6 @@ def download_twse_margin_json(date_str):
     return {}
 
 def fetch_margin_json_data(date_str, raw_ticker):
-    """從快取的全市場資料中，撈出特定上市股票"""
     res = download_twse_margin_json(date_str)
     if not res: return 0, 0, 0, 0
     
@@ -229,13 +246,8 @@ def fetch_margin_json_data(date_str, raw_ticker):
                 return (m_today - m_prev), m_today, (s_today - s_prev), s_today
     return 0, 0, 0, 0
 
-# ==========================================
-# TPEx (上櫃) 專用下載與解析函數 (終極防禦版 + 支援買賣雙向)
-# ==========================================
 @st.cache_data(ttl=86400, show_spinner=False)
 def download_tpex_csv_text(date_str, inst_type, search_type="buy"):
-    """下載上櫃法人 CSV，強制略過 SSL 檢查並安全解碼，支援 searchType 分流"""
-    # 🟢 網址加入 {search_type} 變數，動態抓取 buy 或 sell
     url = f"https://www.tpex.org.tw/www/zh-tw/insti/{inst_type}?type=Daily&date={date_str}&searchType={search_type}&id=&response=csv"
     time.sleep(1) 
     try:
@@ -245,22 +257,16 @@ def download_tpex_csv_text(date_str, inst_type, search_type="buy"):
     except: pass
     return ""
 
-# ==========================================
-# 🟢 升級版：上櫃 (TPEx) 融資券下載與解析 (支援快取)
-# ==========================================
 @st.cache_data(ttl=86400, show_spinner=False)
 def download_tpex_margin_json(roc_date_str):
-    """下載並快取上櫃融資券 JSON (全市場總表)"""
     url = f"https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&o=json&d={roc_date_str}"
-    time.sleep(1) # 只有真正連網時才會觸發延遲
+    time.sleep(1) 
     try:
-        # 強制略過 SSL 檢查
         return requests.get(url, timeout=5, verify=False).json()
     except: pass
     return {}
 
 def fetch_tpex_margin_json_data(roc_date_str, raw_ticker):
-    """從快取的全市場資料中，撈出特定上櫃股票"""
     res = download_tpex_margin_json(roc_date_str)
     if not res: return 0, 0, 0, 0
     
@@ -268,7 +274,6 @@ def fetch_tpex_margin_json_data(roc_date_str, raw_ticker):
     for table in tables:
         for row in table.get('data', []):
             if str(row[0]).strip() == raw_ticker:
-                # 依據 fields 定位：前資(2)、資餘(6)、前券(10)、券餘(14)
                 m_prev = int(str(row[2]).replace(',', ''))
                 m_today = int(str(row[6]).replace(',', ''))
                 s_prev = int(str(row[10]).replace(',', ''))
@@ -276,34 +281,30 @@ def fetch_tpex_margin_json_data(roc_date_str, raw_ticker):
                 return (m_today - m_prev), m_today, (s_today - s_prev), s_today
     return 0, 0, 0, 0
 
-
 # ==========================================
-# 🟢 修正 2：籌碼主迴圈 (加入終極負數清洗器)
+# 籌碼主迴圈 
 # ==========================================
-def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
-    last_20_dates = hist_64.index[-20:]
-    last_10_dates = hist_64.index[-10:]
+def step6_extract_institutional_data(raw_ticker, valid_hist_64, is_otc):
+    # 🛡️ 這裡傳入的是已經過濾掉「未來空殼」的 valid_hist_64
+    last_20_dates = valid_hist_64.index[-20:]
+    last_10_dates = valid_hist_64.index[-10:]
     
     foreign_records = []
     trust_records = []
     margin_records = []
     
-    # 🛡️ 終極過濾器：精準捕捉全形負號、括號、三角形等詭異負數格式
     def safe_parse_int(val_str):
         s = str(val_str).strip()
         if not s: return 0
         
-        # 1. 判斷是否為負數 (涵蓋全形/半形減號、括號、財報三角形)
         is_negative = False
         if s.startswith('-') or s.startswith('－') or s.startswith('−') or \
            (s.startswith('(') and s.endswith(')')) or '△' in s or '▲' in s:
             is_negative = True
             
-        # 2. 暴力拔除所有非數字字元 (只留下純數字)
         cleaned = re.sub(r'\D', '', s)
         if not cleaned: return 0
         
-        # 3. 轉為整數，若為負數則掛上負號
         val = int(cleaned)
         return -val if is_negative else val
     
@@ -311,12 +312,8 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
         date_disp_str = d.strftime('%m/%d')
         
         if not is_otc:
-            # ==========================================
-            # 🟢 上市 (TWSE) 邏輯分支
-            # ==========================================
             date_api_str = d.strftime('%Y%m%d')
             
-            # 1. 外資 (20天)
             df_foreign = fetch_twse_csv_data(date_api_str, "TWT38U")
             net_f = 0
             if not df_foreign.empty:
@@ -326,7 +323,6 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
                     net_f = round(safe_parse_int(target_row.iloc[0, 5]) / 1000)
             foreign_records.append({'日期': date_disp_str, '外資買賣超(張)': net_f})
             
-            # 2. 投信 (20天)
             df_trust = fetch_twse_csv_data(date_api_str, "TWT44U")
             net_t = 0
             if not df_trust.empty:
@@ -336,24 +332,16 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
                     net_t = round(safe_parse_int(target_row.iloc[0, 5]) / 1000)
             trust_records.append({'日期': date_disp_str, '投信買賣超(張)': net_t})
             
-            # 3. 融資券 (10天)
             if d in last_10_dates:
                 m_change, m_today, s_change, s_today = fetch_margin_json_data(date_api_str, raw_ticker)
                 margin_records.append({'日期': date_disp_str, '融資變動(張)': m_change, '融資餘額(張)': m_today, '融券變動(張)': s_change, '融券餘額(張)': s_today})
                 
         else:
-            # ==========================================
-            # 🟢 上櫃 (TPEx) 邏輯分支 (支援買賣超雙向查詢)
-            # ==========================================
             date_tpex_csv_str = d.strftime('%Y/%m/%d')
             
-            # ----------------------------------
-            # 1. 上櫃外資 (先查買超，沒有再查賣超)
-            # ----------------------------------
             net_f = 0
             found_f = False
             
-            # 先查 Buy 檔
             csv_f_buy = download_tpex_csv_text(date_tpex_csv_str, "qfiiStat", "buy")
             if csv_f_buy:
                 df_f_buy = pd.read_csv(io.StringIO(csv_f_buy), names=list(range(20)), on_bad_lines='skip')
@@ -363,7 +351,6 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
                     net_f = safe_parse_int(target_row.iloc[0, 5])
                     found_f = True
             
-            # 買超找不到，改查 Sell 檔
             if not found_f:
                 csv_f_sell = download_tpex_csv_text(date_tpex_csv_str, "qfiiStat", "sell")
                 if csv_f_sell:
@@ -372,18 +359,13 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
                     target_row = df_f_sell[df_f_sell[1] == raw_ticker]
                     if not target_row.empty:
                         val = safe_parse_int(target_row.iloc[0, 5])
-                        # 🟢 確保賣超資料轉為負數 (無論原始表有無負號，強制取絕對值後掛負號)
                         net_f = -abs(val)
                         
             foreign_records.append({'日期': date_disp_str, '外資買賣超(張)': net_f})
             
-            # ----------------------------------
-            # 2. 上櫃投信 (先查買超，沒有再查賣超)
-            # ----------------------------------
             net_t = 0
             found_t = False
             
-            # 先查 Buy 檔
             csv_t_buy = download_tpex_csv_text(date_tpex_csv_str, "sitcStat", "buy")
             if csv_t_buy:
                 df_t_buy = pd.read_csv(io.StringIO(csv_t_buy), names=list(range(20)), on_bad_lines='skip')
@@ -393,7 +375,6 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
                     net_t = safe_parse_int(target_row.iloc[0, 5])
                     found_t = True
                     
-            # 買超找不到，改查 Sell 檔
             if not found_t:
                 csv_t_sell = download_tpex_csv_text(date_tpex_csv_str, "sitcStat", "sell")
                 if csv_t_sell:
@@ -402,21 +383,15 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
                     target_row = df_t_sell[df_t_sell[1] == raw_ticker]
                     if not target_row.empty:
                         val = safe_parse_int(target_row.iloc[0, 5])
-                        # 🟢 確保賣超資料轉為負數
                         net_t = -abs(val)
                         
             trust_records.append({'日期': date_disp_str, '投信買賣超(張)': net_t})
             
-            # ----------------------------------
-            # 3. 上櫃融資券 (10天) 維持不動
-            # ----------------------------------
             if d in last_10_dates:
                 roc_date_str = f"{d.year - 1911}/{d.strftime('%m/%d')}"
                 m_change, m_today, s_change, s_today = fetch_tpex_margin_json_data(roc_date_str, raw_ticker)
                 margin_records.append({'日期': date_disp_str, '融資變動(張)': m_change, '融資餘額(張)': m_today, '融券變動(張)': s_change, '融券餘額(張)': s_today})
-                time.sleep(0.5)
 
-    # --- 以下統一將資料打包成 DataFrame 並畫圖 ---
     df_f_res = pd.DataFrame(foreign_records)
     df_t_res = pd.DataFrame(trust_records)
     df_m_res = pd.DataFrame(margin_records)
@@ -430,45 +405,56 @@ def step6_extract_institutional_data(raw_ticker, hist_64, is_otc):
     fig_t.update_layout(margin=dict(l=20, r=20, t=40, b=20), height=300)
 
     return df_f_res, df_t_res, df_m_res, fig_f, fig_t
+
 # ==========================================
 # 介面繪製輔助函數 (Tech Chart)
 # ==========================================
-def render_tech_chart(hist_64, show_ma5, show_ma10, show_ma20, allow_zoom):
-    date_strings = hist_64.index.strftime('%Y-%m-%d')
+def render_tech_chart(hist_extended, show_ma5, show_ma10, show_ma20, show_ichimoku, allow_zoom):
+    date_strings = hist_extended.index.strftime('%Y-%m-%d')
     
-    # 🟢 包含 4 個子圖與成交量均量的版本
     fig_k = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03, 
                           row_heights=[0.4, 0.2, 0.2, 0.2], 
                           subplot_titles=("價格與均線", "KD (9,3,3)", "MACD (12,26,9)", "成交量與64日均量"))
     
     # --- Row 1: 價格與均線 ---
-    fig_k.add_trace(go.Candlestick(x=date_strings, open=hist_64['Open'], high=hist_64['High'], low=hist_64['Low'], close=hist_64['Close'], name='K線', increasing_line_color='#FF4B4B', increasing_fillcolor='#FF4B4B', decreasing_line_color='#00B050', decreasing_fillcolor='#00B050'), row=1, col=1)
-    if show_ma5: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA5'], name='5MA', line=dict(color='#7A431D', width=1.5)), row=1, col=1)
-    if show_ma10: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA10'], name='10MA', line=dict(color='#00E5FF', width=1.5)), row=1, col=1)
-    if show_ma20: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MA20'], name='20MA', line=dict(color='#0D47A1', width=1.5)), row=1, col=1)
+    fig_k.add_trace(go.Candlestick(x=date_strings, open=hist_extended['Open'], high=hist_extended['High'], low=hist_extended['Low'], close=hist_extended['Close'], name='K線', increasing_line_color='#FF4B4B', increasing_fillcolor='#FF4B4B', decreasing_line_color='#00B050', decreasing_fillcolor='#00B050'), row=1, col=1)
+    if show_ma5: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['MA5'], name='5MA', line=dict(color='#7A431D', width=1.5)), row=1, col=1)
+    if show_ma10: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['MA10'], name='10MA', line=dict(color='#00E5FF', width=1.5)), row=1, col=1)
+    if show_ma20: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['MA20'], name='20MA', line=dict(color='#0D47A1', width=1.5)), row=1, col=1)
     
+    # ☁️ 一目均衡表繪製區塊
+    if show_ichimoku:
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Tenkan'], name='轉換線(9)', line=dict(color='#E91E63', width=1.5)), row=1, col=1)
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Kijun'], name='基準線(26)', line=dict(color='#9C27B0', width=1.5)), row=1, col=1)
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Chikou'], name='遲行跨度', line=dict(color='#8D6E63', width=1.2, dash='dot')), row=1, col=1)
+
+        # 畫雲帶 (填滿 Senkou_A 與 Senkou_B)
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Senkou_A'], name='先行跨度A', line=dict(color='rgba(0,0,0,0)'), showlegend=False, hoverinfo='skip'), row=1, col=1)
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Senkou_B'], name='雲帶', fill='tonexty', fillcolor='rgba(156, 39, 176, 0.15)', line=dict(color='rgba(0,0,0,0)'), hoverinfo='skip'), row=1, col=1)
+
     # --- Row 2: KD ---
-    fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['K'], name='K值', line=dict(color='#FF9900', width=1.2)), row=2, col=1)
-    fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['D'], name='D值', line=dict(color='#0066FF', width=1.2)), row=2, col=1)
+    fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['K'], name='K值', line=dict(color='#FF9900', width=1.2)), row=2, col=1)
+    fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['D'], name='D值', line=dict(color='#0066FF', width=1.2)), row=2, col=1)
     
     # --- Row 3: MACD ---
-    macd_colors = ['#FF4B4B' if val > 0 else '#00B050' for val in hist_64['OSC']]
-    fig_k.add_trace(go.Bar(x=date_strings, y=hist_64['OSC'], name='OSC', marker_color=macd_colors), row=3, col=1)
-    fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['DIF'], name='DIF', line=dict(color='#FF9900', width=1.2)), row=3, col=1)
-    fig_k.add_trace(go.Scatter(x=date_strings, y=hist_64['MACD'], name='MACD', line=dict(color='#0066FF', width=1.2)), row=3, col=1)
+    macd_colors = ['#FF4B4B' if val > 0 else '#00B050' for val in hist_extended['OSC']]
+    fig_k.add_trace(go.Bar(x=date_strings, y=hist_extended['OSC'], name='OSC', marker_color=macd_colors), row=3, col=1)
+    fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['DIF'], name='DIF', line=dict(color='#FF9900', width=1.2)), row=3, col=1)
+    fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['MACD'], name='MACD', line=dict(color='#0066FF', width=1.2)), row=3, col=1)
     
-    # --- Row 4: 成交量與 64 日均量 ---
-    vol_colors = ['#FF4B4B' if row['Close'] >= row['Open'] else '#00B050' for idx, row in hist_64.iterrows()]
-    fig_k.add_trace(go.Bar(x=date_strings, y=hist_64['Volume'], name='成交量(張)', marker_color=vol_colors), row=4, col=1)
+    # --- Row 4: 成交量與均量 ---
+    vol_colors = ['#FF4B4B' if row['Close'] >= row['Open'] else '#00B050' for idx, row in hist_extended.iterrows()]
+    fig_k.add_trace(go.Bar(x=date_strings, y=hist_extended['Volume'], name='成交量(張)', marker_color=vol_colors), row=4, col=1)
     
-    avg_vol = hist_64['Volume'].mean()
-    fig_k.add_trace(go.Scatter(x=date_strings, y=[avg_vol]*len(hist_64), name=f'64日均量({int(avg_vol)}張)', mode='lines', line=dict(color='#FFD700', width=2, dash='dash')), row=4, col=1)
+    # 計算均量時要避開未來的 NaN
+    avg_vol = hist_extended['Volume'].dropna().mean()
+    fig_k.add_trace(go.Scatter(x=date_strings, y=[avg_vol]*len(hist_extended), name=f'歷史均量({int(avg_vol)}張)', mode='lines', line=dict(color='#FFD700', width=2, dash='dash')), row=4, col=1)
     
     fig_k.update_layout(
         xaxis=dict(type='category', visible=False), 
         xaxis2=dict(type='category', visible=False), 
         xaxis3=dict(type='category', visible=False), 
-        xaxis4=dict(type='category', visible=True, title="交易日期", nticks=10),
+        xaxis4=dict(type='category', visible=True, title="交易日期", nticks=15),
         yaxis=dict(visible=False), 
         yaxis2=dict(visible=True), 
         yaxis3=dict(visible=True),
@@ -484,11 +470,12 @@ def render_tech_chart(hist_64, show_ma5, show_ma10, show_ma20, allow_zoom):
     fig_k.update_yaxes(fixedrange=not allow_zoom)
     
     return fig_k
+
 # ==========================================
 # 🚀 系統主程式 (Main Program)
 # ==========================================
 st.title("📊 牧場小霸王")
-st.markdown("支援 **技術K線均線**、**KD/MACD**、**分價量防守** 與 **三大法人/融資券籌碼分析**")
+st.markdown("支援 **技術K線均線**、**一目均衡雲帶**、**分價量防守** 與 **三大法人/融資券籌碼分析**")
 
 name_to_ticker, list_loaded = load_stock_list()
 if not list_loaded: st.warning("⚠️ 找不到 'TW50100.xlsx'，請直接輸入股票代號。")
@@ -514,13 +501,10 @@ if st.button("🚀 開始分析", use_container_width=True):
 if st.session_state.analyzed_input:
     current_target = st.session_state.analyzed_input
     
-    # 模糊搜尋：找出所有包含輸入字串的股票名稱
     matched_names = [name for name in name_to_ticker.keys() if current_target in name] if list_loaded else []
     
-    # 👇👇👇 核心修正：完全命中攔截 👇👇👇
     if len(matched_names) > 1 and current_target in matched_names:
-        matched_names = [current_target]  # 如果有完全一模一樣的，就只留下它
-    # 👆👆👆 核心修正結束 👆👆👆
+        matched_names = [current_target] 
 
     if len(matched_names) == 0:
         target_name = f"自訂代號 ({current_target})"
@@ -541,13 +525,17 @@ if st.session_state.analyzed_input:
             st.error("❌ 無法取得該日期之前的歷史資料。請確認代號與日期。")
             st.stop()
             
-        hist_64 = step2_calc_tech_indicators(hist)
-        latest = hist_64.iloc[-1]
+        # 🟢 這裡回傳的是包含未來的 90 天 hist_extended
+        hist_extended = step2_calc_tech_indicators(hist)
         
-        bins_data, all_intervals_disp, fig_vol, current_price_round = step3_process_volume_profile(hist_64)
+        # 🛡️ 為分價量與籌碼，過濾出真實歷史 (只取 Volume 存在的列)
+        valid_hist = hist_extended.dropna(subset=['Volume'])
+        latest = valid_hist.iloc[-1]
+        
+        bins_data, all_intervals_disp, fig_vol, current_price_round = step3_process_volume_profile(valid_hist)
         top_5_above, top_5_below = step4_find_support_resistance(bins_data, current_price_round)
 
-    actual_last_date = hist_64.index[-1].strftime('%Y/%m/%d')
+    actual_last_date = valid_hist.index[-1].strftime('%Y/%m/%d')
     st.success(f"✅ {target_name} ({yf_ticker}) 分析完成！實際查詢基準日: **{actual_last_date}** / 股價: **{current_price_round:.2f}**")
 
     # 顯示指標表
@@ -563,17 +551,21 @@ if st.session_state.analyzed_input:
     allow_zoom = st.checkbox("🔍 啟用圖表縮放與拖曳", value=False)
     with st.container(border=True):
         st.subheader("📈 技術分析綜合儀表板")
-        c1, c2, c3 = st.columns(3)
-        fig_tech = render_tech_chart(hist_64, c1.checkbox("顯示 5MA", value=False), c2.checkbox("顯示 10MA", value=True), c3.checkbox("顯示 20MA", value=False), allow_zoom)
+        # 🟢 加入一目均衡表開關
+        c1, c2, c3, c4 = st.columns(4)
+        show_ma5 = c1.checkbox("顯示 5MA", value=False)
+        show_ma10 = c2.checkbox("顯示 10MA", value=True)
+        show_ma20 = c3.checkbox("顯示 20MA", value=False)
+        show_ichimoku = c4.checkbox("☁️ 顯示一目均衡表 (雲帶)", value=False)
+        
+        # 將完整的 90 天 DataFrame 丟進去畫圖
+        fig_tech = render_tech_chart(hist_extended, show_ma5, show_ma10, show_ma20, show_ichimoku, allow_zoom)
         st.plotly_chart(fig_tech, use_container_width=True)
 
-    # 👇👇👇 從這裡開始插入新的 MA 落點分析 👇👇👇
-    
     st.divider()
     st.subheader("📏 均線落點分價區間")
     col_ma1, col_ma2, col_ma3 = st.columns(3)
     
-    # 將三個 MA 的數值與對應的 UI 欄位綁定
     ma_settings = [
         (col_ma1, "5MA", latest['MA5']), 
         (col_ma2, "10MA", latest['MA10']), 
@@ -582,32 +574,27 @@ if st.session_state.analyzed_input:
     
     for col, ma_name, ma_val in ma_settings:
         with col:
-            if pd.isna(ma_val):  # 防呆：如果上市天數不足，均線算不出數值
+            if pd.isna(ma_val): 
                 st.write(f"**{ma_name}**：無資料")
                 continue
                 
-            # 尋找該 MA 坐落的籌碼區間
             target_bin = None
             for b in all_intervals_disp:
                 if b['start'] <= ma_val <= b['end']:
                     target_bin = b
                     break
                     
-            # 極端防呆：如果均線價格噴太高或跌太深，超出了目前 K 線畫出的 20 個區間
             if not target_bin:
                 if ma_val > all_intervals_disp[0]['end']: 
-                    target_bin = all_intervals_disp[0]  # 代入最高區間
+                    target_bin = all_intervals_disp[0] 
                 else: 
-                    target_bin = all_intervals_disp[-1] # 代入最低區間
+                    target_bin = all_intervals_disp[-1] 
             
-            # 顯示結果
             st.markdown(f"**{ma_name} ({ma_val:.2f})**")
             st.write(f"落於區間：`{target_bin['label']}`")
             st.write(f"區間籌碼：**{int(target_bin['vol']):,}** 張")
-
-    # 👆👆👆 插入結束 👆👆👆
     
-    st.subheader("📊 64日分價量參考圖")
+    st.subheader("📊 近期分價量參考圖")
     fig_vol.update_xaxes(fixedrange=not allow_zoom)
     fig_vol.update_yaxes(fixedrange=not allow_zoom)
     st.plotly_chart(fig_vol, use_container_width=True)
@@ -622,14 +609,8 @@ if st.session_state.analyzed_input:
         for item in top_5_below: st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
 
     
-   # ----------------------------------------------------
-    # 背景獨立執行「法人及融資券籌碼分析」
-    # ----------------------------------------------------
     st.divider()
-    
-    # 🐛 Debug 模式開關 (已從 UI 隱藏，未來若需使用，將下方兩行註解反轉即可)
-    # show_debug = st.checkbox("🐛 開啟爬蟲 Debug 模式 (用來檢視原始資料的欄位位置)")
-    show_debug = False  # 👈 強制設為 False，直接跳過 Debug 顯示區塊
+    show_debug = False 
     
     c_title, c_btn = st.columns([4, 1])
     with c_title:
@@ -639,19 +620,14 @@ if st.session_state.analyzed_input:
         if st.button("🔄 重新下載快取", use_container_width=True):
             download_twse_csv_text.clear()
             download_tpex_csv_text.clear()
-            # 🟢 補上清除融資券快取的指令
             download_twse_margin_json.clear()
             download_tpex_margin_json.clear()
             
     is_otc = yf_ticker.endswith('.TWO')
     
-   # ==========================================
-    # 🐛 Debug 模式專用顯示區塊 (安全版)
-    # ==========================================
     if show_debug and is_otc:
         st.warning("🔍 【Debug 模式】目前為上櫃股票，以下印出最新一天的原始純文字 (已關閉表格渲染以防止當機)：")
-        test_d = hist_64.index[-1]
-        # 🟢 這裡也要改回正常的斜線
+        test_d = valid_hist.index[-1]
         test_tpex_csv = test_d.strftime('%Y/%m/%d') 
         test_roc = f"{test_d.year - 1911}/{test_d.strftime('%m/%d')}"
         
@@ -660,7 +636,6 @@ if st.session_state.analyzed_input:
             st.write(f"👉 **外資 CSV 原始文字檔前 500 字** ({test_tpex_csv})")
             f_txt = download_tpex_csv_text(test_tpex_csv, "qfiiStat")
             if f_txt:
-                # 🟢 徹底避開 PyArrow，直接印出純文字，保證絕對不當機！
                 st.text(f_txt[:500])
             else:
                 st.error("無資料或連線失敗")
@@ -668,7 +643,6 @@ if st.session_state.analyzed_input:
             st.write(f"👉 **融資券 JSON 原始回傳** ({test_roc})")
             url_m = f"https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&o=json&d={test_roc}"
             try:
-                # 🟢 加上 verify=False，並直接讀取純文字 text
                 res_raw = requests.get(url_m, timeout=5, verify=False).text
                 st.text(res_raw[:500])
             except Exception as e:
@@ -676,17 +650,15 @@ if st.session_state.analyzed_input:
         
         st.info("💡 檢查完畢後，請取消勾選 Debug 模式，即可恢復正常繪圖。")
         st.stop()
-    # ==========================================
     
     with st.spinner("⏳ 正在即時向證交所/櫃買中心調閱籌碼數據，請稍候..."):
-        df_foreign_export, df_trust_export, df_margin_export, fig_f, fig_t = step6_extract_institutional_data(raw_ticker, hist_64, is_otc)
+        # 🟢 傳入已經剃除未來日期的 valid_hist，保護爬蟲
+        df_foreign_export, df_trust_export, df_margin_export, fig_f, fig_t = step6_extract_institutional_data(raw_ticker, valid_hist, is_otc)
         
-    # UI 佈局：分兩排顯示
     col_f, col_t = st.columns(2)
     with col_f: st.plotly_chart(fig_f, use_container_width=True)
     with col_t: st.plotly_chart(fig_t, use_container_width=True)
     
-    # 第二排：融資與融券
     if not df_margin_export.empty:
         st.markdown("#### 📊 近 10 日信用交易明細 (張)")
         col_m, col_s = st.columns(2)
@@ -700,9 +672,6 @@ if st.session_state.analyzed_input:
             st.write("**📉 融券狀況 (散戶做空指標)**")
             st.dataframe(df_margin_reversed[['融券變動(張)', '融券餘額(張)']], use_container_width=True)
 
-    # ----------------------------------------------------
-    # 結尾：Excel 報表匯出
-    # ----------------------------------------------------
     st.divider()
     st.subheader("💾 匯出完整 Excel 報表")
     try:
