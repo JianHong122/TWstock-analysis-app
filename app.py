@@ -26,7 +26,6 @@ st.set_page_config(page_title="牧場小霸王", page_icon="📈", layout="wide"
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_latest_trading_date():
-    """抓取台股大盤指數，自動避開假日與颱風天，取得最後真實交易日"""
     try:
         idx_data = yf.Ticker("^TWII").history(period="5d")
         return idx_data.index[-1].strftime("%Y/%m/%d")
@@ -45,7 +44,8 @@ def load_stock_list():
 # ==========================================
 def step1_fetch_yf_data(ticker, raw_ticker, auto_fallback, target_date_str):
     end_dt = pd.to_datetime(target_date_str, format='%Y/%m/%d') + pd.Timedelta(days=1)
-    start_dt = end_dt - pd.DateOffset(months=6) 
+    # 🟢 為了應付 128 天的分析 + 52 天的一目均衡表暖機，將抓取區間擴充為 10 個月
+    start_dt = end_dt - pd.DateOffset(months=10) 
     
     start_str = start_dt.strftime('%Y-%m-%d')
     end_str = end_dt.strftime('%Y-%m-%d')
@@ -84,7 +84,6 @@ def step1_fetch_yf_data(ticker, raw_ticker, auto_fallback, target_date_str):
 def step2_calc_tech_indicators(hist):
     df = hist.copy()
     
-    # --- 基本指標 ---
     df['MA5'] = df['Close'].rolling(window=5).mean()
     df['MA10'] = df['Close'].rolling(window=10).mean()
     df['MA20'] = df['Close'].rolling(window=20).mean()
@@ -102,46 +101,42 @@ def step2_calc_tech_indicators(hist):
     df['OSC'] = (df['DIF'] - df['MACD']) * 2 
     df['Volume'] = df['Volume'] / 1000  
     
-    # --- ☁️ 一目均衡表 (Ichimoku Kinko Hyo) 計算 ---
     high_9 = df['High'].rolling(window=9).max()
     low_9 = df['Low'].rolling(window=9).min()
-    df['Tenkan'] = (high_9 + low_9) / 2  # 轉換線(9)
+    df['Tenkan'] = (high_9 + low_9) / 2  
 
     high_26 = df['High'].rolling(window=26).max()
     low_26 = df['Low'].rolling(window=26).min()
-    df['Kijun'] = (high_26 + low_26) / 2 # 基準線(26)
+    df['Kijun'] = (high_26 + low_26) / 2 
 
     high_52 = df['High'].rolling(window=52).max()
     low_52 = df['Low'].rolling(window=52).min()
     
-    senkou_a_unaligned = (df['Tenkan'] + df['Kijun']) / 2 # 尚未平移的 A
-    senkou_b_unaligned = (high_52 + low_52) / 2           # 尚未平移的 B
-    df['Chikou'] = df['Close'].shift(-26)                 # 遲行跨度 (收盤價退回26天)
+    senkou_a_unaligned = (df['Tenkan'] + df['Kijun']) / 2 
+    senkou_b_unaligned = (high_52 + low_52) / 2           
+    df['Chikou'] = df['Close'].shift(-26)                 
 
-    # --- 🌟 魔法時刻：製造未來 26 個營業日 ---
     if not df.empty:
         last_date = df.index[-1]
         future_dates = pd.bdate_range(start=last_date + pd.Timedelta(days=1), periods=26)
         future_df = pd.DataFrame(index=future_dates)
         
-        # 縫合歷史與未來
         df_extended = pd.concat([df, future_df])
         
-        # 將雲帶 A, B 往未來平移 26 天，剛好填滿未來的空殼
         df_extended['Senkou_A'] = senkou_a_unaligned.reindex(df_extended.index).shift(26)
         df_extended['Senkou_B'] = senkou_b_unaligned.reindex(df_extended.index).shift(26)
     else:
         df_extended = df
 
-    # 回傳：64天歷史 + 26天未來 (共 90 天)
-    return df_extended.tail(90)
+    # 🟢 這裡回傳「完整」的數據，不再強制裁切，由主程式根據 user 的選擇來動態切片
+    return df_extended
 
 # ==========================================
 # 副程式 3：產生分價量統計與圖表
 # ==========================================
-def step3_process_volume_profile(valid_hist_64):
-    current_price_round = round(valid_hist_64['Close'].dropna().iloc[-1], 2)
-    max_price, min_price = valid_hist_64['High'].max(), valid_hist_64['Low'].min()
+def step3_process_volume_profile(valid_hist):
+    current_price_round = round(valid_hist['Close'].dropna().iloc[-1], 2)
+    max_price, min_price = valid_hist['High'].max(), valid_hist['Low'].min()
     if max_price == min_price:
         max_price, min_price = min_price * 1.05, min_price * 0.95
     
@@ -151,7 +146,7 @@ def step3_process_volume_profile(valid_hist_64):
     bins_data = [{'idx': i, 'start': min_price + i * bin_size, 'end': min_price + (i + 1) * bin_size, 'mid': (min_price + i * bin_size + min_price + (i + 1) * bin_size) / 2, 'label': f"{min_price + i * bin_size:.2f} ~ {min_price + (i + 1) * bin_size:.2f}", 'disp_label': f"{'** ' if i == curr_bin_idx else ''}{min_price + i * bin_size:.2f} ~ {min_price + (i + 1) * bin_size:.2f}", 'is_current': (i == curr_bin_idx), 'vol': 0} for i in range(20)]
     
     all_price_vols = []
-    for _, row in valid_hist_64.iterrows():
+    for _, row in valid_hist.iterrows():
         o, h, l, c, v = round(row['Open'], 2), round(row['High'], 2), round(row['Low'], 2), round(row['Close'], 2), row['Volume']
         if l > h: l, h = h, l 
         vol_open, vol_close, vol_dist_total = v * 0.05, v * 0.30, v * 0.65
@@ -284,10 +279,10 @@ def fetch_tpex_margin_json_data(roc_date_str, raw_ticker):
 # ==========================================
 # 籌碼主迴圈 
 # ==========================================
-def step6_extract_institutional_data(raw_ticker, valid_hist_64, is_otc):
-    # 🛡️ 這裡傳入的是已經過濾掉「未來空殼」的 valid_hist_64
-    last_20_dates = valid_hist_64.index[-20:]
-    last_10_dates = valid_hist_64.index[-10:]
+def step6_extract_institutional_data(raw_ticker, valid_hist, is_otc):
+    # 永遠只取最後 20 天/10 天，完全不被 64/128 天影響，保證爬蟲極速！
+    last_20_dates = valid_hist.index[-20:]
+    last_10_dates = valid_hist.index[-10:]
     
     foreign_records = []
     trust_records = []
@@ -409,46 +404,39 @@ def step6_extract_institutional_data(raw_ticker, valid_hist_64, is_otc):
 # ==========================================
 # 介面繪製輔助函數 (Tech Chart)
 # ==========================================
-def render_tech_chart(hist_extended, show_ma5, show_ma10, show_ma20, show_ichimoku, allow_zoom):
+# 🟢 參數新增 lookback，動態修改標題
+def render_tech_chart(hist_extended, show_ma5, show_ma10, show_ma20, show_ichimoku, allow_zoom, lookback):
     date_strings = hist_extended.index.strftime('%Y-%m-%d')
     
     fig_k = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03, 
                           row_heights=[0.4, 0.2, 0.2, 0.2], 
-                          subplot_titles=("價格與均線", "KD (9,3,3)", "MACD (12,26,9)", "成交量與64日均量"))
+                          subplot_titles=("價格與均線", "KD (9,3,3)", "MACD (12,26,9)", f"成交量與{lookback}日均量"))
     
-    # --- Row 1: 價格與均線 ---
     fig_k.add_trace(go.Candlestick(x=date_strings, open=hist_extended['Open'], high=hist_extended['High'], low=hist_extended['Low'], close=hist_extended['Close'], name='K線', increasing_line_color='#FF4B4B', increasing_fillcolor='#FF4B4B', decreasing_line_color='#00B050', decreasing_fillcolor='#00B050'), row=1, col=1)
     if show_ma5: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['MA5'], name='5MA', line=dict(color='#7A431D', width=1.5)), row=1, col=1)
     if show_ma10: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['MA10'], name='10MA', line=dict(color='#00E5FF', width=1.5)), row=1, col=1)
     if show_ma20: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['MA20'], name='20MA', line=dict(color='#0D47A1', width=1.5)), row=1, col=1)
     
-    # ☁️ 一目均衡表繪製區塊
     if show_ichimoku:
         fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Tenkan'], name='轉換線(9)', line=dict(color='#E91E63', width=1.5)), row=1, col=1)
         fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Kijun'], name='基準線(26)', line=dict(color='#9C27B0', width=1.5)), row=1, col=1)
         fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Chikou'], name='遲行跨度', line=dict(color='#8D6E63', width=1.2, dash='dot')), row=1, col=1)
-
-        # 畫雲帶 (填滿 Senkou_A 與 Senkou_B)
-        # 🟢 修正：改用「橘色(A)與藍灰色(B)」並填滿淡橘色，同時確保移除 hoverinfo='skip' 以利游標顯示未來數值
-        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Senkou_A'], name='先行跨度A', line=dict(color='rgba(255, 152, 0, 0.6)', width=1), showlegend=False), row=1, col=1)
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Senkou_A'], name='先行跨度A', line=dict(color='rgba(255, 152, 0, 0.6)', width=1)), row=1, col=1)
         fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Senkou_B'], name='先行跨度B', fill='tonexty', fillcolor='rgba(255, 152, 0, 0.15)', line=dict(color='rgba(120, 144, 156, 0.6)', width=1)), row=1, col=1)
 
-    # --- Row 2: KD ---
     fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['K'], name='K值', line=dict(color='#FF9900', width=1.2)), row=2, col=1)
     fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['D'], name='D值', line=dict(color='#0066FF', width=1.2)), row=2, col=1)
     
-    # --- Row 3: MACD ---
     macd_colors = ['#FF4B4B' if val > 0 else '#00B050' for val in hist_extended['OSC']]
     fig_k.add_trace(go.Bar(x=date_strings, y=hist_extended['OSC'], name='OSC', marker_color=macd_colors), row=3, col=1)
     fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['DIF'], name='DIF', line=dict(color='#FF9900', width=1.2)), row=3, col=1)
     fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['MACD'], name='MACD', line=dict(color='#0066FF', width=1.2)), row=3, col=1)
     
-    # --- Row 4: 成交量與均量 ---
     vol_colors = ['#FF4B4B' if row['Close'] >= row['Open'] else '#00B050' for idx, row in hist_extended.iterrows()]
     fig_k.add_trace(go.Bar(x=date_strings, y=hist_extended['Volume'], name='成交量(張)', marker_color=vol_colors), row=4, col=1)
     
     avg_vol = hist_extended['Volume'].dropna().mean()
-    fig_k.add_trace(go.Scatter(x=date_strings, y=[avg_vol]*len(hist_extended), name=f'歷史均量({int(avg_vol)}張)', mode='lines', line=dict(color='#FFD700', width=2, dash='dash')), row=4, col=1)
+    fig_k.add_trace(go.Scatter(x=date_strings, y=[avg_vol]*len(hist_extended), name=f'{lookback}日均量({int(avg_vol)}張)', mode='lines', line=dict(color='#FFD700', width=2, dash='dash')), row=4, col=1)
     
     fig_k.update_layout(
         xaxis=dict(type='category', visible=False), 
@@ -525,20 +513,30 @@ if st.session_state.analyzed_input:
             st.error("❌ 無法取得該日期之前的歷史資料。請確認代號與日期。")
             st.stop()
             
-        # 🟢 這裡回傳的是包含未來的 90 天 hist_extended
-        hist_extended = step2_calc_tech_indicators(hist)
-        
-        # 🛡️ 為分價量與籌碼，過濾出真實歷史 (只取 Volume 存在的列)
-        valid_hist = hist_extended.dropna(subset=['Volume'])
-        latest = valid_hist.iloc[-1]
-        
-        bins_data, all_intervals_disp, fig_vol, current_price_round = step3_process_volume_profile(valid_hist)
-        top_5_above, top_5_below = step4_find_support_resistance(bins_data, current_price_round)
+        hist_extended_full = step2_calc_tech_indicators(hist)
+        valid_hist_full = hist_extended_full.dropna(subset=['Volume'])
+        latest = valid_hist_full.iloc[-1]
+        current_price_round_full = round(latest['Close'], 2)
 
-    actual_last_date = valid_hist.index[-1].strftime('%Y/%m/%d')
-    st.success(f"✅ {target_name} ({yf_ticker}) 分析完成！實際查詢基準日: **{actual_last_date}** / 股價: **{current_price_round:.2f}**")
+    actual_last_date = valid_hist_full.index[-1].strftime('%Y/%m/%d')
+    st.success(f"✅ {target_name} ({yf_ticker}) 分析完成！實際查詢基準日: **{actual_last_date}** / 股價: **{current_price_round_full:.2f}**")
 
-    # 顯示指標表
+    # ==========================================
+    # 🟢 核心擴充：64天 / 128天 分析區間切換引擎
+    # ==========================================
+    st.write("")
+    period_choice = st.radio("🗓️ **選擇分析區間 (將同步影響 K 線圖、分價量統計與匯出報表)：**", ["近三個月 (64天)", "近六個月 (128天)"], index=0, horizontal=True)
+    lookback = 64 if "64" in period_choice else 128
+    
+    # 依據選擇的區間動態切片 (保留歷史 + 未來的雲帶)
+    valid_hist = valid_hist_full.tail(lookback)
+    hist_extended = hist_extended_full.tail(lookback + 26)
+    
+    # 重新運算所選區間的分價量
+    bins_data, all_intervals_disp, fig_vol, current_price_round = step3_process_volume_profile(valid_hist)
+    top_5_above, top_5_below = step4_find_support_resistance(bins_data, current_price_round)
+    # ==========================================
+
     st.subheader("📊 技術指標參考")
     st.table(pd.DataFrame({
         "項目": ["均線狀況", "KD狀況", "MACD狀況"],
@@ -551,15 +549,14 @@ if st.session_state.analyzed_input:
     allow_zoom = st.checkbox("🔍 啟用圖表縮放與拖曳", value=False)
     with st.container(border=True):
         st.subheader("📈 技術分析綜合儀表板")
-        # 🟢 加入一目均衡表開關
         c1, c2, c3, c4 = st.columns(4)
         show_ma5 = c1.checkbox("顯示 5MA", value=False)
         show_ma10 = c2.checkbox("顯示 10MA", value=True)
         show_ma20 = c3.checkbox("顯示 20MA", value=False)
         show_ichimoku = c4.checkbox("☁️ 顯示一目均衡表 (雲帶)", value=False)
         
-        # 將完整的 90 天 DataFrame 丟進去畫圖
-        fig_tech = render_tech_chart(hist_extended, show_ma5, show_ma10, show_ma20, show_ichimoku, allow_zoom)
+        # 🟢 畫圖時傳入 lookback 來變更標題
+        fig_tech = render_tech_chart(hist_extended, show_ma5, show_ma10, show_ma20, show_ichimoku, allow_zoom, lookback)
         st.plotly_chart(fig_tech, use_container_width=True)
 
     st.divider()
@@ -594,7 +591,8 @@ if st.session_state.analyzed_input:
             st.write(f"落於區間：`{target_bin['label']}`")
             st.write(f"區間籌碼：**{int(target_bin['vol']):,}** 張")
     
-    st.subheader("📊 近期分價量參考圖")
+    # 🟢 動態更改標題
+    st.subheader(f"📊 {lookback}日分價量參考圖")
     fig_vol.update_xaxes(fixedrange=not allow_zoom)
     fig_vol.update_yaxes(fixedrange=not allow_zoom)
     st.plotly_chart(fig_vol, use_container_width=True)
@@ -608,7 +606,6 @@ if st.session_state.analyzed_input:
         st.write("**⬇️ 向下方支撐區**")
         for item in top_5_below: st.write(f"`{item['disp_label']:<20}` | **{int(item['vol']):,}** 張")
 
-    
     st.divider()
     show_debug = False 
     
@@ -652,7 +649,6 @@ if st.session_state.analyzed_input:
         st.stop()
     
     with st.spinner("⏳ 正在即時向證交所/櫃買中心調閱籌碼數據，請稍候..."):
-        # 🟢 傳入已經剃除未來日期的 valid_hist，保護爬蟲
         df_foreign_export, df_trust_export, df_margin_export, fig_f, fig_t = step6_extract_institutional_data(raw_ticker, valid_hist, is_otc)
         
     col_f, col_t = st.columns(2)
@@ -694,12 +690,12 @@ if st.session_state.analyzed_input:
             for ws in workbook.worksheets:
                 for col in range(1, ws.max_column + 1):
                     ws.column_dimensions[get_column_letter(col)].width = 25.5
-
             
             sheet1 = workbook['區間分價量總表']
             chart = BarChart()
             chart.type, chart.style = "bar", 10
-            chart.title = f"{target_name} 64日分價量分佈圖"
+            # 🟢 動態修改 Excel 標題
+            chart.title = f"{target_name} {lookback}日分價量分佈圖"
             chart.x_axis.title, chart.y_axis.title = "價格區間", "成交量"
             chart.height, chart.width = max(10, len(df_sr_excel) * 0.5) * 1.5, 24
             chart.add_data(Reference(sheet1, min_col=3, min_row=1, max_row=len(df_sr_excel) + 1), titles_from_data=True)
