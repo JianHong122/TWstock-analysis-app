@@ -21,14 +21,6 @@ if 'analyzed_input' not in st.session_state:
     st.session_state.analyzed_input = None
 if 'target_date' not in st.session_state:
     st.session_state.target_date = None
-if 'period_choice' not in st.session_state:
-    st.session_state.period_choice = "近三個月 (64天)"
-
-def sync_period_top():
-    st.session_state.period_choice = st.session_state.radio_top
-
-def sync_period_bottom():
-    st.session_state.period_choice = st.session_state.radio_bottom
 
 st.set_page_config(page_title="牧場小霸王", page_icon="📈", layout="wide")
 
@@ -545,23 +537,18 @@ if st.session_state.analyzed_input:
     st.success(f"✅ {target_name} ({yf_ticker}) 分析完成！實際查詢基準日: **{actual_last_date}** / 股價: **{current_price_round_full:.2f}**")
 
     # ==========================================
-    # 🟢 雙向連動開關 (上方)
+    # 🟢 上半部：技術線圖與指標專用開關 (獨立)
     # ==========================================
     st.write("")
-    st.radio("🗓️ **選擇分析區間 (將同步影響下方 K 線圖與分價量)：**", 
+    period_choice_top = st.radio("🗓️ **選擇分析區間 (僅影響下方技術 K 線圖與指標)：**", 
              ["近三個月 (64天)", "近六個月 (128天)"], 
              key="radio_top",
-             index=0 if st.session_state.period_choice == "近三個月 (64天)" else 1,
-             on_change=sync_period_top,
              horizontal=True)
              
-    lookback = 64 if "64" in st.session_state.period_choice else 128
+    lookback_top = 64 if "64" in period_choice_top else 128
     
-    valid_hist = valid_hist_full.tail(lookback)
-    hist_extended = hist_extended_full.tail(lookback + 26)
-    
-    bins_data, all_intervals_disp, fig_vol, current_price_round = step3_process_volume_profile(valid_hist)
-    top_5_above, top_5_below = step4_find_support_resistance(bins_data, current_price_round)
+    # 僅針對 K 線與技術指標進行切片
+    hist_extended_top = hist_extended_full.tail(lookback_top + 26)
 
     # ==========================================
     # 📊 綜合技術指標參考表格 (加入一目均衡表判讀)
@@ -617,20 +604,25 @@ if st.session_state.analyzed_input:
         show_ma20 = c3.checkbox("顯示 20MA", value=False)
         show_ichimoku = c4.checkbox("☁️ 顯示一目均衡表 (雲帶)", value=False)
         
-        fig_tech = render_tech_chart(hist_extended, show_ma5, show_ma10, show_ma20, show_ichimoku, allow_zoom, lookback)
+        fig_tech = render_tech_chart(hist_extended_top, show_ma5, show_ma10, show_ma20, show_ichimoku, allow_zoom, lookback_top)
         st.plotly_chart(fig_tech, use_container_width=True)
 
     st.divider()
 
     # ==========================================
-    # 🟢 雙向連動開關 (下方)
+    # 🟢 下半部：分價量統計專用開關 (獨立)
     # ==========================================
-    st.radio("🗓️ **快速切換分價量統計區間 (與上方開關完全同步)：**", 
+    period_choice_bottom = st.radio("🗓️ **選擇分價量統計區間 (僅影響下方分價量防守與支撐壓力)：**", 
              ["近三個月 (64天)", "近六個月 (128天)"], 
              key="radio_bottom",
-             index=0 if st.session_state.period_choice == "近三個月 (64天)" else 1,
-             on_change=sync_period_bottom,
              horizontal=True)
+
+    lookback_bottom = 64 if "64" in period_choice_bottom else 128
+    valid_hist_bottom = valid_hist_full.tail(lookback_bottom)
+    
+    # 根據下方的選擇重新計算分價量
+    bins_data, all_intervals_disp, fig_vol, current_price_round = step3_process_volume_profile(valid_hist_bottom)
+    top_5_above, top_5_below = step4_find_support_resistance(bins_data, current_price_round)
 
     st.subheader("📏 均線落點分價區間")
     col_ma1, col_ma2, col_ma3 = st.columns(3)
@@ -663,7 +655,7 @@ if st.session_state.analyzed_input:
             st.write(f"落於區間：`{target_bin['label']}`")
             st.write(f"區間籌碼：**{int(target_bin['vol']):,}** 張")
     
-    st.subheader(f"📊 {lookback}日分價量參考圖")
+    st.subheader(f"📊 {lookback_bottom}日分價量參考圖")
     fig_vol.update_xaxes(fixedrange=not allow_zoom)
     fig_vol.update_yaxes(fixedrange=not allow_zoom)
     st.plotly_chart(fig_vol, use_container_width=True)
@@ -720,7 +712,8 @@ if st.session_state.analyzed_input:
         st.stop()
     
     with st.spinner("⏳ 正在即時向證交所/櫃買中心調閱籌碼數據，請稍候..."):
-        df_foreign_export, df_trust_export, df_margin_export, fig_f, fig_t = step6_extract_institutional_data(raw_ticker, valid_hist, is_otc)
+        # 籌碼只需要看近 20 天，傳入 valid_hist_full 保證有足夠天數即可
+        df_foreign_export, df_trust_export, df_margin_export, fig_f, fig_t = step6_extract_institutional_data(raw_ticker, valid_hist_full, is_otc)
         
     col_f, col_t = st.columns(2)
     with col_f: st.plotly_chart(fig_f, use_container_width=True)
@@ -765,7 +758,7 @@ if st.session_state.analyzed_input:
             sheet1 = workbook['區間分價量總表']
             chart = BarChart()
             chart.type, chart.style = "bar", 10
-            chart.title = f"{target_name} {lookback}日分價量分佈圖"
+            chart.title = f"{target_name} {lookback_bottom}日分價量分佈圖"
             chart.x_axis.title, chart.y_axis.title = "價格區間", "成交量"
             chart.height, chart.width = max(10, len(df_sr_excel) * 0.5) * 1.5, 24
             chart.add_data(Reference(sheet1, min_col=3, min_row=1, max_row=len(df_sr_excel) + 1), titles_from_data=True)
