@@ -429,9 +429,9 @@ def render_tech_chart(hist_extended, show_ma5, show_ma10, show_ma20, show_ichimo
         fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Chikou'], name='遲行跨度', line=dict(color='#8D6E63', width=1.2, dash='dot')), row=1, col=1)
 
         # 畫雲帶 (填滿 Senkou_A 與 Senkou_B)
-        # 🟢 修正：移除 hoverinfo='skip'，並加上淡色實體邊線，讓游標能精準抓取未來數值
-        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Senkou_A'], name='先行跨度A', line=dict(color='rgba(156, 39, 176, 0.4)', width=1), showlegend=False), row=1, col=1)
-        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Senkou_B'], name='先行跨度B', fill='tonexty', fillcolor='rgba(156, 39, 176, 0.15)', line=dict(color='rgba(156, 39, 176, 0.4)', width=1)), row=1, col=1)
+        # 🟢 修正：改用「橘色(A)與藍灰色(B)」並填滿淡橘色，同時確保移除 hoverinfo='skip' 以利游標顯示未來數值
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Senkou_A'], name='先行跨度A', line=dict(color='rgba(255, 152, 0, 0.6)', width=1), showlegend=False), row=1, col=1)
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Senkou_B'], name='先行跨度B', fill='tonexty', fillcolor='rgba(255, 152, 0, 0.15)', line=dict(color='rgba(120, 144, 156, 0.6)', width=1)), row=1, col=1)
 
     # --- Row 2: KD ---
     fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['K'], name='K值', line=dict(color='#FF9900', width=1.2)), row=2, col=1)
