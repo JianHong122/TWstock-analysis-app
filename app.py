@@ -546,12 +546,50 @@ if st.session_state.analyzed_input:
     top_5_above, top_5_below = step4_find_support_resistance(bins_data, current_price_round)
 
     st.subheader("📊 技術指標參考")
+    
+    # 🟢 預先計算一目均衡表狀態
+    # 1. 雲帶位置計算
+    cloud_top = max(latest['Senkou_A'], latest['Senkou_B']) if not pd.isna(latest['Senkou_A']) else 0
+    cloud_bottom = min(latest['Senkou_A'], latest['Senkou_B']) if not pd.isna(latest['Senkou_A']) else 0
+    
+    if pd.isna(latest['Senkou_A']):
+        kumo_status = "⚪ 數據不足"
+    elif latest['Close'] > cloud_top:
+        kumo_status = "✅ 雲上 (強勢)"
+    elif latest['Close'] < cloud_bottom:
+        kumo_status = "⚠️ 雲下 (弱勢)"
+    else:
+        kumo_status = "⭕ 雲中 (盤整)"
+        
+    # 2. 轉基交叉
+    tenkan_kijun_status = "✅ 多" if latest['Tenkan'] > latest['Kijun'] else "⚠️ 空"
+    
+    # 3. 遲行確認 (今天收盤價 vs 26天前的收盤價)
+    past_close = valid_hist_full['Close'].iloc[-27] if len(valid_hist_full) > 26 else latest['Close']
+    chikou_status = "✅ 多" if latest['Close'] > past_close else "⚠️ 空"
+
+    # 🟢 綜合輸出表格
     st.table(pd.DataFrame({
-        "項目": ["均線狀況", "KD狀況", "MACD狀況"],
-        "狀態": ["✅ 多頭" if latest['MA5'] > latest['MA10'] > latest['MA20'] else ("⚠️ 空頭" if latest['MA5'] < latest['MA10'] < latest['MA20'] else "⭕ 盤整"), 
-                 "✅ 多" if latest['K'] > latest['D'] else "⚠️ 空", 
-                 "✅ 多" if latest['DIF'] > latest['MACD'] else "⚠️ 空"],
-        "數值細項": [f"5MA:{latest['MA5']:.1f} / 10MA:{latest['MA10']:.1f}", f"K:{latest['K']:.1f} / D:{latest['D']:.1f}", f"DIF:{latest['DIF']:.1f} / MACD:{latest['MACD']:.1f}"]
+        "項目": [
+            "均線狀況", "KD狀況", "MACD狀況", 
+            "一目 - 雲帶位置", "一目 - 轉基交叉", "一目 - 遲行確認"
+        ],
+        "狀態": [
+            "✅ 多頭" if latest['MA5'] > latest['MA10'] > latest['MA20'] else ("⚠️ 空頭" if latest['MA5'] < latest['MA10'] < latest['MA20'] else "⭕ 盤整"), 
+            "✅ 多" if latest['K'] > latest['D'] else "⚠️ 空", 
+            "✅ 多" if latest['DIF'] > latest['MACD'] else "⚠️ 空",
+            kumo_status,
+            tenkan_kijun_status,
+            chikou_status
+        ],
+        "數值細項": [
+            f"5MA:{latest['MA5']:.1f} / 10MA:{latest['MA10']:.1f}", 
+            f"K:{latest['K']:.1f} / D:{latest['D']:.1f}", 
+            f"DIF:{latest['DIF']:.1f} / MACD:{latest['MACD']:.1f}",
+            f"現價:{latest['Close']:.2f} / 雲頂:{cloud_top:.2f} / 雲底:{cloud_bottom:.2f}",
+            f"轉換:{latest['Tenkan']:.2f} / 基準:{latest['Kijun']:.2f}",
+            f"現價:{latest['Close']:.2f} / 26日前收盤:{past_close:.2f}"
+        ]
     }))
 
     allow_zoom = st.checkbox("🔍 啟用圖表縮放與拖曳", value=False)
