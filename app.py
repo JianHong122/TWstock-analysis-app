@@ -468,7 +468,7 @@ def render_tech_chart(hist_extended, show_ma5, show_ma10, show_ma20, show_ichimo
 # 🚀 系統主程式 (Main Program)
 # ==========================================
 st.title("📊 牧場小霸王")
-st.markdown("支援 **技術K線均線**、**一目均衡雲帶**、**分價量防守** 與 **三大法人/融洪券籌碼分析**")
+st.markdown("支援 **技術K線均線**、**一目均衡雲帶**、**分價量防守** 與 **三大法人/融資券籌碼分析**")
 
 name_to_ticker, list_loaded = load_stock_list()
 if not list_loaded: st.warning("⚠️ 找不到 'TW50100.xlsx'，請直接輸入股票代號。")
