@@ -15,7 +15,7 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==========================================
-# 0. 初始化設定與共用函數 (加入連動 Callback)
+# 0. 初始化設定與共用函數
 # ==========================================
 if 'analyzed_input' not in st.session_state:
     st.session_state.analyzed_input = None
@@ -24,7 +24,6 @@ if 'target_date' not in st.session_state:
 if 'period_choice' not in st.session_state:
     st.session_state.period_choice = "近三個月 (64天)"
 
-# 🟢 建立兩個開關的連動同步函數
 def sync_period_top():
     st.session_state.period_choice = st.session_state.radio_top
 
@@ -422,12 +421,31 @@ def render_tech_chart(hist_extended, show_ma5, show_ma10, show_ma20, show_ichimo
     if show_ma10: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['MA10'], name='10MA', line=dict(color='#00E5FF', width=1.5)), row=1, col=1)
     if show_ma20: fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['MA20'], name='20MA', line=dict(color='#0D47A1', width=1.5)), row=1, col=1)
     
+    # ==========================================
+    # ☁️ 終極版一目均衡表 (雙色自動變色雲帶)
+    # ==========================================
     if show_ichimoku:
-        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Tenkan'], name='轉換線(9)', line=dict(color='#E91E63', width=1.5)), row=1, col=1)
-        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Kijun'], name='基準線(26)', line=dict(color='#9C27B0', width=1.5)), row=1, col=1)
+        # 1. 轉換線 (快線，橘黃色，同 KD 快線)
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Tenkan'], name='轉換線(9)', line=dict(color='#FF9900', width=1.5)), row=1, col=1)
+        # 2. 基準線 (慢線，寶藍色，同 KD 慢線)
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Kijun'], name='基準線(26)', line=dict(color='#0066FF', width=1.5)), row=1, col=1)
+        # 3. 遲行跨度 (棕色虛線)
         fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Chikou'], name='遲行跨度', line=dict(color='#8D6E63', width=1.2, dash='dot')), row=1, col=1)
-        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Senkou_A'], name='先行跨度A', line=dict(color='rgba(255, 152, 0, 0.6)', width=1)), row=1, col=1)
-        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Senkou_B'], name='先行跨度B', fill='tonexty', fillcolor='rgba(255, 152, 0, 0.15)', line=dict(color='rgba(120, 144, 156, 0.6)', width=1)), row=1, col=1)
+
+        # 4. 雲帶變色遮罩計算 (取 A 與 B 之間的高點作為天花板)
+        cloud_upper = hist_extended[['Senkou_A', 'Senkou_B']].max(axis=1)
+        
+        # 5. 多頭雲 (紅雲：當 A > B 時發動填色)
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Senkou_B'], name='多頭下緣', line=dict(color='rgba(0,0,0,0)'), showlegend=False, hoverinfo='skip'), row=1, col=1)
+        fig_k.add_trace(go.Scatter(x=date_strings, y=cloud_upper, name='多頭紅雲', fill='tonexty', fillcolor='rgba(255, 75, 75, 0.15)', line=dict(color='rgba(0,0,0,0)'), showlegend=False, hoverinfo='skip'), row=1, col=1)
+        
+        # 6. 空頭雲 (綠雲：當 B > A 時發動填色)
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Senkou_A'], name='空頭下緣', line=dict(color='rgba(0,0,0,0)'), showlegend=False, hoverinfo='skip'), row=1, col=1)
+        fig_k.add_trace(go.Scatter(x=date_strings, y=cloud_upper, name='空頭綠雲', fill='tonexty', fillcolor='rgba(0, 176, 80, 0.15)', line=dict(color='rgba(0,0,0,0)'), showlegend=False, hoverinfo='skip'), row=1, col=1)
+
+        # 7. 補上帶有游標提示的實體邊界線
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Senkou_A'], name='先行跨度A', line=dict(color='rgba(255, 75, 75, 0.6)', width=1)), row=1, col=1)
+        fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['Senkou_B'], name='先行跨度B', line=dict(color='rgba(0, 176, 80, 0.6)', width=1)), row=1, col=1)
 
     fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['K'], name='K值', line=dict(color='#FF9900', width=1.2)), row=2, col=1)
     fig_k.add_trace(go.Scatter(x=date_strings, y=hist_extended['D'], name='D值', line=dict(color='#0066FF', width=1.2)), row=2, col=1)
@@ -527,7 +545,7 @@ if st.session_state.analyzed_input:
     st.success(f"✅ {target_name} ({yf_ticker}) 分析完成！實際查詢基準日: **{actual_last_date}** / 股價: **{current_price_round_full:.2f}**")
 
     # ==========================================
-    # 🟢 雙向連動開關 (上方位置 - 綁定 radio_top)
+    # 🟢 雙向連動開關 (上方)
     # ==========================================
     st.write("")
     st.radio("🗓️ **選擇分析區間 (將同步影響下方 K 線圖與分價量)：**", 
@@ -545,10 +563,11 @@ if st.session_state.analyzed_input:
     bins_data, all_intervals_disp, fig_vol, current_price_round = step3_process_volume_profile(valid_hist)
     top_5_above, top_5_below = step4_find_support_resistance(bins_data, current_price_round)
 
+    # ==========================================
+    # 📊 綜合技術指標參考表格 (加入一目均衡表判讀)
+    # ==========================================
     st.subheader("📊 技術指標參考")
     
-    # 🟢 預先計算一目均衡表狀態
-    # 1. 雲帶位置計算
     cloud_top = max(latest['Senkou_A'], latest['Senkou_B']) if not pd.isna(latest['Senkou_A']) else 0
     cloud_bottom = min(latest['Senkou_A'], latest['Senkou_B']) if not pd.isna(latest['Senkou_A']) else 0
     
@@ -561,14 +580,11 @@ if st.session_state.analyzed_input:
     else:
         kumo_status = "⭕ 雲中 (盤整)"
         
-    # 2. 轉基交叉
     tenkan_kijun_status = "✅ 多" if latest['Tenkan'] > latest['Kijun'] else "⚠️ 空"
     
-    # 3. 遲行確認 (今天收盤價 vs 26天前的收盤價)
     past_close = valid_hist_full['Close'].iloc[-27] if len(valid_hist_full) > 26 else latest['Close']
     chikou_status = "✅ 多" if latest['Close'] > past_close else "⚠️ 空"
 
-    # 🟢 綜合輸出表格
     st.table(pd.DataFrame({
         "項目": [
             "均線狀況", "KD狀況", "MACD狀況", 
@@ -607,7 +623,7 @@ if st.session_state.analyzed_input:
     st.divider()
 
     # ==========================================
-    # 🟢 雙向連動開關 (下方位置 - 綁定 radio_bottom)
+    # 🟢 雙向連動開關 (下方)
     # ==========================================
     st.radio("🗓️ **快速切換分價量統計區間 (與上方開關完全同步)：**", 
              ["近三個月 (64天)", "近六個月 (128天)"], 
@@ -692,7 +708,7 @@ if st.session_state.analyzed_input:
             else:
                 st.error("無資料或連線失敗")
         with c_d2:
-            st.write(f"👉 **融資券 JSON 原始回傳** ({test_roc})")
+            st.write(f"👉 **融 বৃহত্তর JSON 原始回傳** ({test_roc})")
             url_m = f"https://www.tpex.org.tw/web/stock/margin_trading/margin_balance/margin_bal_result.php?l=zh-tw&o=json&d={test_roc}"
             try:
                 res_raw = requests.get(url_m, timeout=5, verify=False).text
