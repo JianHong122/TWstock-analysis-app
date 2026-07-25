@@ -15,12 +15,21 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==========================================
-# 0. 初始化設定與共用函數
+# 0. 初始化設定與共用函數 (加入連動 Callback)
 # ==========================================
 if 'analyzed_input' not in st.session_state:
     st.session_state.analyzed_input = None
 if 'target_date' not in st.session_state:
     st.session_state.target_date = None
+if 'period_choice' not in st.session_state:
+    st.session_state.period_choice = "近三個月 (64天)"
+
+# 🟢 建立兩個開關的連動同步函數
+def sync_period_top():
+    st.session_state.period_choice = st.session_state.radio_top
+
+def sync_period_bottom():
+    st.session_state.period_choice = st.session_state.radio_bottom
 
 st.set_page_config(page_title="牧場小霸王", page_icon="📈", layout="wide")
 
@@ -44,7 +53,6 @@ def load_stock_list():
 # ==========================================
 def step1_fetch_yf_data(ticker, raw_ticker, auto_fallback, target_date_str):
     end_dt = pd.to_datetime(target_date_str, format='%Y/%m/%d') + pd.Timedelta(days=1)
-    # 🟢 為了應付 128 天的分析 + 52 天的一目均衡表暖機，將抓取區間擴充為 10 個月
     start_dt = end_dt - pd.DateOffset(months=10) 
     
     start_str = start_dt.strftime('%Y-%m-%d')
@@ -128,7 +136,6 @@ def step2_calc_tech_indicators(hist):
     else:
         df_extended = df
 
-    # 🟢 這裡回傳「完整」的數據，不再強制裁切，由主程式根據 user 的選擇來動態切片
     return df_extended
 
 # ==========================================
@@ -280,7 +287,6 @@ def fetch_tpex_margin_json_data(roc_date_str, raw_ticker):
 # 籌碼主迴圈 
 # ==========================================
 def step6_extract_institutional_data(raw_ticker, valid_hist, is_otc):
-    # 永遠只取最後 20 天/10 天，完全不被 64/128 天影響，保證爬蟲極速！
     last_20_dates = valid_hist.index[-20:]
     last_10_dates = valid_hist.index[-10:]
     
@@ -404,7 +410,6 @@ def step6_extract_institutional_data(raw_ticker, valid_hist, is_otc):
 # ==========================================
 # 介面繪製輔助函數 (Tech Chart)
 # ==========================================
-# 🟢 參數新增 lookback，動態修改標題
 def render_tech_chart(hist_extended, show_ma5, show_ma10, show_ma20, show_ichimoku, allow_zoom, lookback):
     date_strings = hist_extended.index.strftime('%Y-%m-%d')
     
@@ -463,7 +468,7 @@ def render_tech_chart(hist_extended, show_ma5, show_ma10, show_ma20, show_ichimo
 # 🚀 系統主程式 (Main Program)
 # ==========================================
 st.title("📊 牧場小霸王")
-st.markdown("支援 **技術K線均線**、**一目均衡雲帶**、**分價量防守** 與 **三大法人/融資券籌碼分析**")
+st.markdown("支援 **技術K線均線**、**一目均衡雲帶**、**分價量防守** 與 **三大法人/融洪券籌碼分析**")
 
 name_to_ticker, list_loaded = load_stock_list()
 if not list_loaded: st.warning("⚠️ 找不到 'TW50100.xlsx'，請直接輸入股票代號。")
@@ -522,20 +527,23 @@ if st.session_state.analyzed_input:
     st.success(f"✅ {target_name} ({yf_ticker}) 分析完成！實際查詢基準日: **{actual_last_date}** / 股價: **{current_price_round_full:.2f}**")
 
     # ==========================================
-    # 🟢 核心擴充：64天 / 128天 分析區間切換引擎
+    # 🟢 雙向連動開關 (上方位置 - 綁定 radio_top)
     # ==========================================
     st.write("")
-    period_choice = st.radio("🗓️ **選擇分析區間 (將同步影響 K 線圖、分價量統計與匯出報表)：**", ["近三個月 (64天)", "近六個月 (128天)"], index=0, horizontal=True)
-    lookback = 64 if "64" in period_choice else 128
+    st.radio("🗓️ **選擇分析區間 (將同步影響下方 K 線圖與分價量)：**", 
+             ["近三個月 (64天)", "近六個月 (128天)"], 
+             key="radio_top",
+             index=0 if st.session_state.period_choice == "近三個月 (64天)" else 1,
+             on_change=sync_period_top,
+             horizontal=True)
+             
+    lookback = 64 if "64" in st.session_state.period_choice else 128
     
-    # 依據選擇的區間動態切片 (保留歷史 + 未來的雲帶)
     valid_hist = valid_hist_full.tail(lookback)
     hist_extended = hist_extended_full.tail(lookback + 26)
     
-    # 重新運算所選區間的分價量
     bins_data, all_intervals_disp, fig_vol, current_price_round = step3_process_volume_profile(valid_hist)
     top_5_above, top_5_below = step4_find_support_resistance(bins_data, current_price_round)
-    # ==========================================
 
     st.subheader("📊 技術指標參考")
     st.table(pd.DataFrame({
@@ -555,11 +563,21 @@ if st.session_state.analyzed_input:
         show_ma20 = c3.checkbox("顯示 20MA", value=False)
         show_ichimoku = c4.checkbox("☁️ 顯示一目均衡表 (雲帶)", value=False)
         
-        # 🟢 畫圖時傳入 lookback 來變更標題
         fig_tech = render_tech_chart(hist_extended, show_ma5, show_ma10, show_ma20, show_ichimoku, allow_zoom, lookback)
         st.plotly_chart(fig_tech, use_container_width=True)
 
     st.divider()
+
+    # ==========================================
+    # 🟢 雙向連動開關 (下方位置 - 綁定 radio_bottom)
+    # ==========================================
+    st.radio("🗓️ **快速切換分價量統計區間 (與上方開關完全同步)：**", 
+             ["近三個月 (64天)", "近六個月 (128天)"], 
+             key="radio_bottom",
+             index=0 if st.session_state.period_choice == "近三個月 (64天)" else 1,
+             on_change=sync_period_bottom,
+             horizontal=True)
+
     st.subheader("📏 均線落點分價區間")
     col_ma1, col_ma2, col_ma3 = st.columns(3)
     
@@ -591,7 +609,6 @@ if st.session_state.analyzed_input:
             st.write(f"落於區間：`{target_bin['label']}`")
             st.write(f"區間籌碼：**{int(target_bin['vol']):,}** 張")
     
-    # 🟢 動態更改標題
     st.subheader(f"📊 {lookback}日分價量參考圖")
     fig_vol.update_xaxes(fixedrange=not allow_zoom)
     fig_vol.update_yaxes(fixedrange=not allow_zoom)
@@ -694,7 +711,6 @@ if st.session_state.analyzed_input:
             sheet1 = workbook['區間分價量總表']
             chart = BarChart()
             chart.type, chart.style = "bar", 10
-            # 🟢 動態修改 Excel 標題
             chart.title = f"{target_name} {lookback}日分價量分佈圖"
             chart.x_axis.title, chart.y_axis.title = "價格區間", "成交量"
             chart.height, chart.width = max(10, len(df_sr_excel) * 0.5) * 1.5, 24
